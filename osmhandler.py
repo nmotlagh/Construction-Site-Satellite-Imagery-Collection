@@ -5,6 +5,8 @@ This class can also be used to identify a boundary tag by applying the entire da
 well as ways.
 """
 
+from __future__ import annotations
+
 __author__ = """Nicholas Kashani Motlagh @ Ohio State University\n
                 Aswathnarayan Radhakrishnan @ Ohio State University\n
                 Jim Davis @ Ohio State University (Point of Contact, see __email__)\n
@@ -18,9 +20,15 @@ from pathlib import Path
 # Lib
 import geopandas as gpd
 import osmium
-from osmium._osmium import InvalidLocationError
 import shapely.wkb as wkblib
 from shapely.geometry import Polygon
+
+from way_chain import _geom_errors, _intersection_over_union, _prepare_geom
+
+try:
+    from osmium import InvalidLocationError
+except ImportError:  # pyosmium < 4
+    from osmium._osmium import InvalidLocationError
 
 # Directory containing the output
 output_dir = Path("output/")
@@ -44,6 +52,18 @@ class OSMHandler(osmium.SimpleHandler):
         self.tags = {}
         self.helpful_descriptors = {}
         self.ways_list = []
+
+    def apply_file(self, filename, *args, **kwargs):
+        """Apply a file with locations enabled when the pyosmium version supports it."""
+        kwargs.setdefault("locations", True)
+        try:
+            return super().apply_file(filename, *args, **kwargs)
+        except TypeError:
+            kwargs.pop("locations", None)
+            try:
+                return super().apply_file(filename, *args, **kwargs)
+            except TypeError:
+                return super().apply_file(filename)
 
     def _way_inventory(self, elem):
         """
@@ -180,14 +200,15 @@ class OSMHandler(osmium.SimpleHandler):
             restrict_geometry.append(
                 Polygon([(bbox[0], bbox[1]), (bbox[0], bbox[3]), (bbox[2], bbox[3]), (bbox[2], bbox[1]), ]))
         # create the dataframe
-        self.df_osm = gpd.GeoDataFrame(rows, columns=data_col_names, geometry=restrict_geometry)
-        self.df_osm.crs = 'epsg:4326'
+        self.df_osm = gpd.GeoDataFrame(
+            rows, columns=data_col_names, geometry=restrict_geometry, crs="EPSG:4326"
+        )
         # sort by start and end date and reset the index
         self.df_osm = self.df_osm.sort_values(by=['start', 'end'])
         self.df_osm = self.df_osm.reset_index(drop=True)
         return self.df_osm
 
-    def generate_single_shape_file(self, current_date, directory):
+    def generate_single_shape_file(self, current_date, directory) -> None:
         """Will generate a single shape file on a given start date and save in directory
 
         :param current_date: Date of the shape file
@@ -196,13 +217,11 @@ class OSMHandler(osmium.SimpleHandler):
         """
         # Get a gdf on the current date
         df = self._get_geo_dataframe(current_date)
-        # create or locate the directory
-        if not directory.is_dir():
-            directory.mkdir()
+        directory.mkdir(parents=True, exist_ok=True)
         # extract to shapefile
         df.to_file(driver='ESRI Shapefile', filename=str(directory / f"{str(current_date)}.shp"))
 
-    def update_prev_post_tag(self, sites, way_id, boundary_f_handler, prev=True):
+    def update_prev_post_tag(self, sites, way_id, boundary_f_handler, prev: bool = True):
         """
         This will update sites with either new post or prev tags as well as updated chains. It will return a new way id
         if the site is still incomplete.
@@ -215,34 +234,50 @@ class OSMHandler(osmium.SimpleHandler):
         # confidence thresholds for determining chaining and end tag
         construction_chain_confidence = .5
         tag_confidence = .5
-        # get construction polygon on day
-        construction_multipolygon = self.geometry[way_id]
-        # get polygons and tags of boundary day
+        geom_errors = _geom_errors()
+        construction_multipolygon = _prepare_geom(self.geometry.get(way_id))
         boundary_tags = boundary_f_handler.helpful_descriptors
         boundary_multipolygons = boundary_f_handler.geometry
 
+        def _set_boundary_tag(tag: str) -> None:
+            chain = sites.map[sites.find_key(way_id)]
+            if prev:
+                chain.boundary_previous = tag
+            else:
+                chain.boundary_post = tag
+
+        if construction_multipolygon is None:
+            _set_boundary_tag("NO TAG FOUND")
+            return None
+
         # best case we know what the area was before it went under construction
         if way_id in boundary_tags.keys():
-            if prev:
-                sites.map[sites.find_key(way_id)].boundary_previous = boundary_tags[way_id]
-            else:
-                sites.map[sites.find_key(way_id)].boundary_post = boundary_tags[way_id]
+            _set_boundary_tag(boundary_tags[way_id])
             return None
 
         # a list of locations that occupy the construction polygon
         locations_of_interest = []
         # get a list of intersecting polygons
         for boundary_multipoly_key in boundary_multipolygons.keys():
-            # check that the new tag isn't in the under construction map and intersects the construction polygon
-            if boundary_multipoly_key not in sites.get_map_ways() and \
-                    construction_multipolygon.intersects(boundary_multipolygons[boundary_multipoly_key]):
-                # Add the key, IOU, and inverse area of the polygon of interest (makes sorting easier)
-                locations_of_interest.append([boundary_multipoly_key,
-                                              construction_multipolygon.intersection(
-                                                  boundary_multipolygons[boundary_multipoly_key]).area /
-                                              (construction_multipolygon.union(
-                                                  boundary_multipolygons[boundary_multipoly_key]).area),
-                                              1/boundary_multipolygons[boundary_multipoly_key].area])
+            if boundary_multipoly_key in sites.get_map_ways():
+                continue
+            boundary_geom = _prepare_geom(boundary_multipolygons[boundary_multipoly_key])
+            if boundary_geom is None:
+                continue
+            try:
+                intersects = construction_multipolygon.intersects(boundary_geom)
+            except geom_errors:
+                continue
+            if not intersects:
+                continue
+            try:
+                area = boundary_geom.area
+            except geom_errors:
+                continue
+            if area <= 0:
+                continue
+            iou = _intersection_over_union(construction_multipolygon, boundary_geom)
+            locations_of_interest.append([boundary_multipoly_key, iou, 1.0 / area])
         # sort largest to smallest, first check IOU, then check inverse area of boundary multipolygon
         locations_of_interest.sort(key=lambda x: (x[1], x[2]))
         locations_of_interest.reverse()
@@ -251,8 +286,8 @@ class OSMHandler(osmium.SimpleHandler):
         del_locations = []
         if len(locations_of_interest) > 0:
             for boundary_multipoly_key, iou, inv_area_boundary in locations_of_interest:
-                if boundary_tags[boundary_multipoly_key] == "landuse=construction" \
-                        or boundary_tags[boundary_multipoly_key] == "building=construction":
+                tag = boundary_tags.get(boundary_multipoly_key, "NO TAG FOUND")
+                if tag == "landuse=construction" or tag == "building=construction":
                     # Make sure we are adding a way to the chain
                     if iou > construction_chain_confidence and boundary_multipoly_key in boundary_f_handler.ways_list:
                         sites.increment_chain(way_id, boundary_multipoly_key, is_prev=prev)
@@ -269,17 +304,12 @@ class OSMHandler(osmium.SimpleHandler):
         if len(locations_of_interest) > 0:
             # go through locations of interest
             for boundary_multipoly_key, iou, __ in locations_of_interest:
+                tag = boundary_tags.get(boundary_multipoly_key, "NO TAG FOUND")
                 # check that a location of interest is not in error and meets confidence threshold
-                if "NO TAG FOUND" not in boundary_tags[boundary_multipoly_key] and iou > tag_confidence:
-                    if prev:
-                        sites.map[sites.find_key(way_id)].boundary_previous = boundary_tags[boundary_multipoly_key]
-                    else:
-                        sites.map[sites.find_key(way_id)].boundary_post = boundary_tags[boundary_multipoly_key]
+                if "NO TAG FOUND" not in tag and iou > tag_confidence:
+                    _set_boundary_tag(tag)
                     sites.update_map(way_id, geo=boundary_multipolygons[boundary_multipoly_key])
                     return None
         # no locations were found so no tag found
-        if prev:
-            sites.map[sites.find_key(way_id)].boundary_previous = "NO TAG FOUND"
-        else:
-            sites.map[sites.find_key(way_id)].boundary_post = "NO TAG FOUND"
+        _set_boundary_tag("NO TAG FOUND")
         return None

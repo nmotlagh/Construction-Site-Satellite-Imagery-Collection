@@ -1,506 +1,432 @@
-"""
-This module contains a class used to interface with the Planet api.
-"""
+"""Planet Data API search + Orders API v2 client (PSScene)."""
 
-__author__ = """Nicholas Kashani Motlagh @ Ohio State University\n
-                Aswathnarayan Radhakrishnan @ Ohio State University\n
-                Jim Davis @ Ohio State University (Point of Contact, see __email__)\n
-                Roman Ilin @ AFRL/RYAP, Wright-Patterson AFB"""
-__email__ = 'davis.1719@osu.edu'
-__date__ = "2020-08-05"
+from __future__ import annotations
 
-# Built-in/Generic Imports
-from datetime import date, timedelta, datetime
-import json
-import math
 import os
-from pathlib import Path
+import re
 import shutil
-import sys
-from time import sleep
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
-# Libs
 import geopandas as gpd
 import numpy as np
-from planet import api
-from shapely import geometry, affinity
+from shapely import affinity, geometry
 from skimage import io
-from urllib3 import exceptions as url_exceptions
-import zipfile
 
-# Directory containing the output
-output_dir = Path("output")
+from dates import padding_scale, sample_date_windows
+from workspace import OUTPUT_DIR
+
+output_dir = OUTPUT_DIR
+
+PLANET_CUTOFF = date(2017, 2, 19)
+ITEM_TYPE = "PSScene"
+DATE_IN_NAME = re.compile(r"(?:19|20)\d{6}")
+FINAL_ORDER_STATES = frozenset({"success", "failed", "partial", "cancelled"})
+RGB_FALLBACK = "analytic_udm2"
+NIR_FALLBACK = "analytic_sr_udm2"
+
+
+def _as_acquired_datetime(value: date | datetime | str) -> datetime:
+    """Planet ``date_range_filter`` requires ``datetime`` (not ISO strings)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    parsed = date.fromisoformat(str(value).strip()[:10])
+    return datetime(parsed.year, parsed.month, parsed.day, tzinfo=timezone.utc)
+
+
+def acquired_date_from_filename(path: Path) -> str | None:
+    """Return ``YYYY-MM-DD`` from the PSScene ``YYYYMMDD_...`` filename prefix."""
+    match = DATE_IN_NAME.search(path.name)
+    if not match:
+        return None
+    raw = match.group(0)
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
+def classify_planet_file(path: Path) -> str | None:
+    name = path.name.lower()
+    if path.suffix.lower() not in {".tif", ".tiff"}:
+        return None
+    if "udm" in name:
+        return "udm"
+    if "visual" in name:
+        return "rgb"
+    if "analytic" in name:
+        return "nir"
+    return None
+
+
+def reflectance_to_uint8(arr: np.ndarray) -> np.ndarray:
+    """Scale Planet/Sentinel reflectance to displayable uint8.
+
+    Handles uint16 (0-10000) analytic, float 0-1 reflectance, and already-uint8
+    visual chips. The ICCVW code cast float 0-1 arrays with ``astype(np.uint8)``,
+    which produced black PNGs.
+    """
+    pixels = np.asarray(arr)
+    if pixels.size == 0:
+        return pixels.astype(np.uint8, copy=False)
+    if pixels.dtype == np.uint8:
+        return pixels
+    values = pixels.astype(np.float64, copy=False)
+    peak = np.nanmax(values)
+    if np.issubdtype(pixels.dtype, np.floating) or peak <= 1.5:
+        values = values * 255.0
+    elif peak > 255:
+        values = values / 10000.0 * 255.0
+    return np.clip(values, 0, 255).astype(np.uint8)
+
+
+def _bgr_to_rgb(img: np.ndarray) -> np.ndarray:
+    """Planet analytic 4-band order is B, G, R, NIR."""
+    return np.stack([img[:, :, 2], img[:, :, 1], img[:, :, 0]], axis=-1)
+
+
+def _planet_client(api_key: str | None):
+    """Build a sync Planet SDK v3 client.
+
+    ``Planet(session=Session(auth=Auth.from_key(key)))`` when a key is present;
+    otherwise ``Planet()`` so ``planet auth login`` / ``PL_AUTH_*`` sessions work.
+    Verified against planet 3.6.0: ``Planet(session=None, base_url=None)``.
+    """
+    from planet import Auth, Planet, Session
+
+    if api_key:
+        session = Session(auth=Auth.from_key(api_key))
+        return Planet(session=session)
+    return Planet()
 
 
 class PlanetHandlerV2:
-    """
-    A class which can create and download imagery orders for rows in a GeoDataFrame from extract_sites
-    """
+    """Search PSScene items and order clipped RGB/NIR bundles for each site."""
 
     def __init__(self, api_key, image_parameters, gdf):
-        """
-        Creates a PlanetHandler object which can create and download orders of images for sites in the gdf using an
-        api key.
-        :param api_key: API key used to download images
-        :param image_parameters: Map of parameters used in processing
-        :param gdf: The GeoDataFrame containing construction sites
-        """
         self.gdf = gdf
-        self.client = api.ClientV1(api_key=api_key)
         self.params = image_parameters
-        self.item_types = ["PSOrthoTile"]
+        self.item_types = [ITEM_TYPE]
+        self.day_padding = 5
+        self.client = _planet_client(api_key)
+
         self.bundle = []
-        if self.params["nir"]:
-            self.bundle.append("analytic_sr")
         if self.params["rgb"]:
             self.bundle.append("visual")
-        self.day_padding = 5
+        if self.params["nir"]:
+            self.bundle.append("analytic_udm2")
+        if not self.bundle:
+            raise ValueError("Select --rgb and/or --nir before ordering Planet imagery")
 
     def get_dates(self, row):
-        """
-        A function which returns a list of size num-images which contains evenly spaced tuples of date ranges.
-        This function automatically includes date ranges which include the start date and the end date.
-        :param row: A row in the dataframe for which to gather date ranges
-        :return: A list of tuples containing evenly spaced starting and ending dates.
-        """
-        # get date objects
         start_date = date.fromisoformat(row["start"])
         end_date = date.fromisoformat(row["end"])
-        # find number of days under construction inside start-end window (end - start + 1) - 2
-        days_in_range = (end_date - start_date).days - 1
-        # find number of images needed in the range
-        num_img_within_range = self.params["num-images"] - 2
-        # if we want all available images or we request more images than in the construction range, return full window
-        if self.params["num-images"] == -1 or num_img_within_range >= days_in_range:
-            return [[str(start_date), str(end_date + timedelta(days=1 + self.day_padding))]]
-
-        # create a date list whose first element is a range (start_date, start_date + 1 + padding)
-        date_list = [[str(start_date), str(start_date + timedelta(days=1 + self.day_padding))]]
-        # i is going to be used as a multiplier, start at 1 and end at num_img_within_range
-        for i in range(1, num_img_within_range + 1):
-            # compute number of days to add to the start date
-            days_add = timedelta(days=math.ceil(i * days_in_range / (num_img_within_range + 1)))
-            date_list.append([str(start_date + days_add),
-                              str(start_date + days_add + timedelta(days=1 + self.day_padding))])
-        # add day after construction to the list
-        date_list.append([str(end_date), str(end_date + timedelta(days=1 + self.day_padding))])
-        return date_list
+        return sample_date_windows(
+            start_date, end_date, self.params["num-images"], self.day_padding
+        )
 
     def generate_geoson_geometry(self, row):
-        """
-        Generates a scaled geoson geometry of a bounding box containing row["geometry"]
-        :param row: The row whose geometry will be used to create a geoson geometry
-        :return: A scaled geoson geometry for row.
-        """
-        # Scale the bounding box up
-        boxes = affinity.scale(row["geometry"], xfact=math.sqrt(self.params["padding"]),
-                               yfact=math.sqrt(self.params["padding"]))
-        # Get a geoson geometry
-        temp_json = gpd.GeoSeries(boxes).to_json()
-        geo_json = json.loads(temp_json)
-        return geo_json["features"][0]["geometry"]
+        scale = padding_scale(self.params["padding"])
+        boxes = affinity.scale(row["geometry"], xfact=scale, yfact=scale)
+        return gpd.GeoSeries([boxes], crs="EPSG:4326").__geo_interface__["features"][0]["geometry"]
 
     def get_filter(self, row, left_date, right_date):
-        """
-        Creates a filter for an order for row. A geometry filter, date filter, and permission filter are combined into
-        an and filter.
-        :param row: The row of the dataframe for which to create a filter
-        :param left_date: The earliest date to include in the filter
-        :param right_date: The latest date to include in the filter
-        :return: An and filter containing geometry filter, date filter, and permission filter.
-        """
+        from planet import data_filter
+
         geo_json_geometry = self.generate_geoson_geometry(row)
-        # Create a filter using the geoson geometry
-        geo_filter = api.filters.geom_filter(geo_json_geometry)
-        # Create a filter using left and right dates
-        date_filter = api.filters.date_range("acquired", gte=str(left_date), lte=str(right_date))
-        # Create a permission filter
-        and_filter = api.filters.and_filter(geo_filter, date_filter)
-        if self.params["rgb"]:
-            permission_filter = api.filters.permission_filter('assets.visual:download')
-            and_filter = api.filters.and_filter(and_filter, permission_filter)
-        if self.params["nir"]:
-            permission_filter = api.filters.permission_filter('assets.analytic_sr:download')
-            and_filter = api.filters.and_filter(and_filter, permission_filter)
-        # and_filter = api.filters.and_filter(geo_filter, date_filter, permission_filter)
-        permission_filter = api.filters.permission_filter(f'assets:download')
-        and_filter = api.filters.and_filter(and_filter, permission_filter)
-        # Return an and filter
-        return and_filter
+        return data_filter.and_filter(
+            [
+                data_filter.geometry_filter(geo_json_geometry),
+                data_filter.date_range_filter(
+                    "acquired",
+                    gte=_as_acquired_datetime(left_date),
+                    lte=_as_acquired_datetime(right_date),
+                ),
+                data_filter.permission_filter(),
+            ]
+        )
 
     def update_item_ids(self, item_ids, and_filter, row, full_window=False):
-        """
-        Will update dictionary item_ids with new item ids from request.
-        :param item_ids: Map of ids of items to download
-        :param and_filter: A filter used to search for new items
-        :param row: A row in the dataframe to get new items
-        :param full_window: True when all images are requested
-        :return: None
-        """
-        # create a search request
-        request = api.filters.build_search_request(and_filter, self.item_types)
-        # try to get the request
-        retry = 0
-        search_result = None
-        while retry < 5:
-            try:
-                search_result = self.client.quick_search(request, sort="acquired asc")
-                break
-            except api.exceptions.InvalidAPIKey:
-                print("Your api key is invalid!")
-                sys.exit(2)
-            except api.APIException:
-                retry += 1
-                sleep(1)
-        # Server might be down
-        if search_result is None:
+        from planet.exceptions import APIError, ClientError
+
+        site_geo = row["geometry"]
+        covering = {}
+        intersecting = []
+        try:
+            results = self.client.data.search(
+                self.item_types,
+                search_filter=and_filter,
+                sort="acquired asc",
+                limit=0 if full_window else 250,
+            )
+        except (APIError, ClientError) as exc:
+            print(f"\tPlanet search failed: {exc}")
             return
-        for page in search_result.iter():
-            for item in page.items_iter(250):
-                # Check that the tile contains the full geometry
-                acquired_date = item["properties"]["acquired"].split("T")[0]
-                item_geo = geometry.shape(item["geometry"])
-                if item_geo.contains(row["geometry"]):
-                    if acquired_date not in item_ids.keys():
-                        item_ids[acquired_date] = item["id"]
-                        if not full_window:
-                            return
+
+        for item in results:
+            acquired_date = item["properties"]["acquired"].split("T")[0]
+            item_geo = geometry.shape(item["geometry"])
+            if item_geo.contains(site_geo) or item_geo.covers(site_geo):
+                covering.setdefault(acquired_date, item["id"])
+                if not full_window:
+                    item_ids.update(covering)
+                    return
+            elif item_geo.intersects(site_geo):
+                overlap = item_geo.intersection(site_geo).area
+                intersecting.append((overlap, acquired_date, item["id"]))
+
+        if covering:
+            item_ids.update(covering)
+            return
+        if intersecting:
+            intersecting.sort(reverse=True)
+            _, acquired_date, item_id = intersecting[0]
+            item_ids.setdefault(acquired_date, item_id)
 
     def create_order(self, row):
-        """
-        Create an order for a row in self.gdf.
-        :param row: A row for which an order will be created.
-        :return: If an order was created, a tupe (order, chain_id) otherwise None
-        """
-        cutoff_date = date(day=19, month=2, year=2017)
-        if date.fromisoformat(row["start"]) < cutoff_date:
+        from planet import order_request
+        from planet.exceptions import APIError, ClientError
+
+        if date.fromisoformat(row["start"]) < PLANET_CUTOFF:
             if self.params["verbose"]:
-                print("\tStart date before 2/19/2017! Skipped!")
+                print("\tStart date before 2017-02-19! Skipped!")
             return None
-        # get a list of dates for the row
+
         date_list = self.get_dates(row)
         item_ids = {}
         geo_json_geometry = self.generate_geoson_geometry(row)
-
-        # Update the item_ids map with items from each date range in date_list
-        for date_range in date_list:
-            and_filter = self.get_filter(row, date_range[0], date_range[1])
+        for left, right in date_list:
+            and_filter = self.get_filter(row, left, right)
             self.update_item_ids(item_ids, and_filter, row, full_window=(len(date_list) == 1))
 
-        # Check that there are items to order
-        available_items = [item_ids[k] for k in item_ids.keys()]
-        if len(available_items) > 0:
-            # list of orders that have been sent
-            sent_orders = []
-            # n is the max number of items we can submit in an order. We can have at most 500 products per order
-            # If RGB and NIR then 250 items per order else, 500 items
-            n = 500 // len(self.bundle)
-            # split available items into chunks of max number of items
-            chunked_items = [available_items[i * n:(i + 1) * n] for i in range((len(available_items) + n - 1) // n)]
-            # create an order for each chunk
-            for chunk in chunked_items:
-                products = []
-                for b in self.bundle:
-                    product = {
-                        "item_type": self.item_types[0],
-                        "item_ids": chunk,
-                        "product_bundle": b
-                    }
-                    products.append(product)
+        available_items = list(item_ids.values())
+        if not available_items:
+            if self.params["verbose"]:
+                print("\tCould not submit order. No available items!")
+            return None
 
-                # Create the order
-                order_request = {
-                    "name": row["chain_id"],
-                    "tools": [{
-                        "reproject": {
-                            "projection": "EPSG:4326",
-                            "kernel": "near"
-                        }
-                    },
-                        {
-                            "clip": {
-                                "aoi": geo_json_geometry
-                            }
-                        }
-                    ],
-                    "products": products,
-                    "notifications": {
-                        "email": self.params["email"]
-                    },
-                    "delivery": {
-                        "archive_type": "zip",
-                        "single_archive": True,
-                        "archive_filename": "{{name}}_{{order_id}}.zip"
-                    }
-                }
-                # Try to send the order
-                try:
-                    sent_order = self.client.create_order(order_request)
-                    sent_orders.append([sent_order.get(), row["chain_id"], item_ids])
-                except api.APIException as e:
-                    print(f"\tCould not get order {row['chain_id']}. Exception: {e}")
-            if len(sent_orders) > 0:
-                return sent_orders
-            else:
-                return None
-        elif self.params["verbose"]:
-            print("\tCould not submit order. No available items!")
+        sent_orders = []
+        n = max(1, 500 // len(self.bundle))
+        chunked_items = [available_items[i * n : (i + 1) * n] for i in range((len(available_items) + n - 1) // n)]
+        # Clip in the item CRS using a WGS84 AOI, then reproject the chip to EPSG:4326.
+        tools = [
+            order_request.clip_tool(geo_json_geometry),
+            order_request.reproject_tool(projection="EPSG:4326", kernel="near"),
+        ]
+        notifications = order_request.notifications(email=True) if self.params["email"] else None
+
+        for chunk in chunked_items:
+            products = []
+            for bundle in self.bundle:
+                fallback = NIR_FALLBACK if bundle == "analytic_udm2" else RGB_FALLBACK
+                products.append(
+                    order_request.product(
+                        item_ids=chunk,
+                        product_bundle=bundle,
+                        item_type=ITEM_TYPE,
+                        fallback_bundle=fallback,
+                    )
+                )
+            request = order_request.build_request(
+                name=str(row["chain_id"])[:100],
+                products=products,
+                tools=tools,
+                notifications=notifications,
+                order_type="partial",
+            )
+            try:
+                sent_order = self.client.orders.create_order(request)
+                sent_orders.append([sent_order, row["chain_id"], item_ids])
+            except (APIError, ClientError) as exc:
+                print(f"\tCould not get order {row['chain_id']}. Exception: {exc}")
+        return sent_orders or None
 
     def construct_order_list(self):
-        """
-        Constructs a list of orders from order_log.txt
-        :return: The constructed order_list
-        """
+        from planet.exceptions import APIError, ClientError
+
         order_list = []
-        with open("order_log.txt", 'r') as f:
-            for line in f:
-                line = line.split(",")
-                line[-1] = line[-1].strip("\n")
-                order = self.client.get_individual_order(line[0]).get()
-                chain_id = line[1]
+        with open("order_log.txt", encoding="utf-8") as handle:
+            for line in handle:
+                order_id, chain_id, *_ = line.strip().split(",")
+                try:
+                    order = self.client.orders.get_order(order_id)
+                except (APIError, ClientError) as exc:
+                    print(f"\tCould not load order {order_id}: {exc}")
+                    continue
                 order_list.append([order, chain_id])
         return order_list
 
     def download_orders(self):
-        """
-        Downloads orders from order_list.
-        :return: None
-        """
-        # Recover the order list from order_log.txt
+        from planet.exceptions import APIError, ClientError
+
+        if not Path("order_log.txt").is_file():
+            print("No order_log.txt found. Place orders first without --download.")
+            return
+
         order_list = self.construct_order_list()
         completed_order_indices = []
-        # try to download orders
         try:
             for order_info_index, order_info in enumerate(order_list):
-                # get path to planet dir
                 planet_path = output_dir / f"{order_info[1]}/images/planet"
-                # Get the id of the order
+                planet_path.mkdir(parents=True, exist_ok=True)
                 order_id = order_info[0]["id"]
-                # Check that the current order is still running
-                if order_info[0]["state"] not in ["success", "failed", "partial"]:
-                    if order_info[0]["state"] != "running" and self.params["verbose"]:
-                        print(f"\tOrder {order_id} is {order_info[0]['state']}")
+                state = order_info[0].get("state")
+                if state not in FINAL_ORDER_STATES:
+                    if self.params["verbose"] and state != "running":
+                        print(f"\tOrder {order_id} is {state}")
                     try:
-                        order_info[0] = self.client.get_individual_order(order_id).get()
-                    except api.APIException as e:
-                        print(f"\tError getting order. Order will remain in order_log. Exception: {e}")
-                else:
-                    # The order is not running
-                    # Check that the order was a success
-                    if self.params["verbose"]:
-                        if order_info[0]["state"] == "failed":
-                            print(f"\tOrder {order_id} failed for {order_info[1]}.")
-                        elif order_info[0]["state"] == "partial":
-                            print(f"\tOrder {order_id} failed (only partially available) for {order_info[1]}.")
-                    if order_info[0]["state"] == "success":
-                        correct_link = None
-                        # make a temp dir for zip
-                        write_path = planet_path / f"temp"
-                        if not write_path.is_dir():
-                            write_path.mkdir()
-                        for item in order_info[0]["_links"]["results"]:
-                        # Get link for zip
-                            if "zip" in item["name"] :
-                                correct_link = item["location"]
-                                break
-                        # Check that the zip link exists
-                        if correct_link is None:
-                            continue
-                        # try to download zip
-                        keep_trying = True
-                        sleep_time = .2
-                        response = None
-                        while keep_trying and sleep_time < 120:
-                            try:
-                                write_func = api.write_to_file(directory=str(write_path))
-                                response = self.client.download_location(correct_link, callback=write_func)
-                                response.wait()
-                                keep_trying = False
-                            except api.exceptions.TooManyRequests:
-                                response = None
-                                sleep_time *= 2
-                                sleep(sleep_time)
-                        # Check if server failed to return order
-                        if response is None:
-                            return
-                        # Try to unzip into temp
-                        try:
-                            zip_path = next(write_path.glob("*.zip"))
-                            with zipfile.ZipFile(str(zip_path), 'r') as zip_ref:
-                                zip_ref.extractall(str(write_path))
-                        except StopIteration:
-                            continue
-                        # Rewrite files in zip to proper directories
-                        for file in (write_path / "files").glob("*.tif"):
+                        order_info[0] = self.client.orders.get_order(order_id)
+                    except (APIError, ClientError) as exc:
+                        print(f"\tError getting order. Order will remain in order_log. Exception: {exc}")
+                    continue
+
+                if self.params["verbose"] and state in {"failed", "partial", "cancelled"}:
+                    print(f"\tOrder {order_id} {state} for {order_info[1]}.")
+                accept_partial = self.params.get("accept-partial", True)
+                can_download = state == "success" or (state == "partial" and accept_partial)
+                if can_download:
+                    write_path = planet_path / "temp"
+                    write_path.mkdir(parents=True, exist_ok=True)
+                    try:
+                        # directory= must already exist; SDK raises ClientError if state is not final.
+                        self.client.orders.download_order(order_id, directory=write_path, overwrite=True)
+                    except (APIError, ClientError) as exc:
+                        print(f"\tDownload failed for {order_id}: {exc}")
+                        continue
+                    for file in write_path.rglob("*"):
+                        if file.is_file():
                             self.rewrite_tif(file, planet_path)
-                        # Delete temp
-                        shutil.rmtree(str(write_path))
-                        # Send notification
-                        if self.params["verbose"]:
-                            print(f"\tBundle {order_id} downloaded for {order_info[1]}!")
+                    shutil.rmtree(write_path, ignore_errors=True)
+                    if self.params["verbose"]:
+                        print(f"\tBundle {order_id} downloaded for {order_info[1]}!")
 
-                    # Write blank images for days where no images were captured
-                    # Check that all available imagery was selected and this is the last order in the order list
-                    # for the current chain_id
-                    if self.params["num-images"] == -1 and not any(order_info[1] == chain_id and
-                                                                   o_index > order_info_index
-                                                                   for o_index, (o, chain_id) in enumerate(order_list)):
-                        # Add bands that need blank images
-                        bands = []
-                        if self.params["rgb"]:
-                            bands.append("rgb")
-                        if self.params["nir"]:
-                            bands.append("nir")
-
-                        for b in bands:
-                            img_dir = planet_path / f"{b}"
-                            # Check that an image exists in the folder
-                            try:
-                                any_img_path = next(iter(img_dir.glob("*.png")))
-                            except StopIteration:
-                                break
-                            # Create a blank image to be saved
-                            temp_img = io.imread(str(any_img_path))
-                            img_size = np.array(temp_img).shape
-                            blank_img = np.zeros(img_size).astype(np.uint8)
-                            # Get start and end date
-                            row = self.gdf.loc[self.gdf["chain_id"] == order_info[1]].iloc[0]
-                            start_date = date.fromisoformat(row["start"])
-                            end_date = date.fromisoformat(row["end"])
-                            empty_dates = [str(start_date + timedelta(days=i)) for i in
-                                           range((end_date - start_date).days + 1)]
-                            # save a blank image for each day which is missing an image
-                            for empty_date in empty_dates:
-                                if not (img_dir / f"{empty_date}.png").is_file():
-                                    blank_path = img_dir / f"{empty_date}_empty.png"
-                                    io.imsave(str(blank_path), blank_img, check_contrast=False)
-
-                    # Add the current order to the completed order indices
-                    completed_order_indices.append(order_info_index)
-
-        except api.exceptions.MissingResource:
-            print("Download link expired... Please retry.")
-        except url_exceptions.ProtocolError:
-            print("Connection to host lost... Please retry.")
-        except BaseException as e:
-            print(f"Something went wrong... {e}. Please retry.")
+                if self.params["num-images"] == -1 and not any(
+                    order_info[1] == chain_id and o_index > order_info_index
+                    for o_index, (_, chain_id) in enumerate(order_list)
+                ):
+                    self._write_empty_placeholders(order_info[1], planet_path)
+                completed_order_indices.append(order_info_index)
+        except BaseException as exc:
+            print(f"Something went wrong... {exc}. Please retry.")
         finally:
-            # Remove orders from the list
             new_order_list, completed_orders = [], []
-            for i, order in enumerate(order_list):
-                if i in completed_order_indices:
+            for index, order in enumerate(order_list):
+                if index in completed_order_indices:
                     completed_orders.append(order)
                 else:
                     new_order_list.append(order)
-            # Save remaining orders
-            if len(new_order_list) > 0:
+            if new_order_list:
                 self.save_order_list(new_order_list)
                 print(f"There are still {len(new_order_list)} orders!")
             else:
                 print("No remaining orders!")
-                os.remove("order_log.txt")
-            # Update the log with completed orders
-            if len(completed_orders) > 0:
+                if Path("order_log.txt").is_file():
+                    os.remove("order_log.txt")
+            if completed_orders:
                 self.update_complete_log(completed_orders)
+
+    def _write_empty_placeholders(self, chain_id, planet_path):
+        bands = [name for name, flag in (("rgb", self.params["rgb"]), ("nir", self.params["nir"])) if flag]
+        row = self.gdf.loc[self.gdf["chain_id"] == chain_id].iloc[0]
+        start_date = date.fromisoformat(row["start"])
+        end_date = date.fromisoformat(row["end"])
+        empty_dates = [
+            str(start_date + timedelta(days=offset))
+            for offset in range((end_date - start_date).days + 1)
+        ]
+        for band in bands:
+            img_dir = planet_path / band
+            try:
+                any_img_path = next(img_dir.glob("*.png"))
+            except StopIteration:
+                continue
+            blank_img = np.zeros_like(io.imread(str(any_img_path)))
+            for empty_date in empty_dates:
+                if not (img_dir / f"{empty_date}.png").is_file():
+                    io.imsave(str(img_dir / f"{empty_date}_empty.png"), blank_img, check_contrast=False)
 
     @staticmethod
     def rewrite_tif(current_file, new_dir):
-        """
-        Rewrites the tif file downloaded from planet to a png file. In the RGB case, a mask of bad pixels will be saved
-        as well as the RGB image. In the NIR case, a png file of scaled surface reflectance values will be saved.
-        :param current_file: The path to the tif file.
-        :param new_dir: The new directory that contains bands where the png file should be saved to.
-        :return: None
-        """
-        date_name = current_file.parts[-1].split("_")[2]
-        if "Visual" in str(current_file):
-            bundle_path = "rgb"
-        else:
-            bundle_path = "nir"
-        new_dir = new_dir / f"{bundle_path}"
-        # Check if a udm file
-        if "udm" in str(current_file):
-            date_name = f"{date_name}_udm"
-            shutil.copy(str(current_file), str(new_dir / f"{date_name}.tif"))
-            os.remove(str(current_file))
+        kind = classify_planet_file(current_file)
+        if kind is None:
+            return
+        date_name = acquired_date_from_filename(current_file)
+        if date_name is None:
+            print(f"{current_file} has no YYYYMMDD in the filename; skipped")
+            return
+        if kind == "udm":
+            dest = new_dir / "nir"
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy(str(current_file), str(dest / f"{date_name}_udm.tif"))
             return
         try:
             img = io.imread(str(current_file))
-        except BaseException:
-            print(f"{str(current_file)} failed to write to PNG. Probably not a TIFF file")
+        except Exception:
+            print(f"{current_file} failed to read as TIFF")
             return
-        new_path = new_dir / f"{date_name}.png"
-        if bundle_path == "rgb":
-            img_arr = np.array(img[:, :, 0:3], dtype=np.uint16)
-            io.imsave(str(new_path), img_arr.astype(np.uint8), check_contrast=False)
-            img_arr = np.array(img[:, :, 3], dtype=np.uint8)
-            new_path = new_dir / f"{date_name}_mask.png"
-            io.imsave(str(new_path), img_arr, check_contrast=False)
+
+        if kind == "rgb":
+            dest = new_dir / "rgb"
+            dest.mkdir(parents=True, exist_ok=True)
+            if img.ndim == 3 and img.shape[-1] >= 3:
+                rgb = reflectance_to_uint8(img[:, :, :3])
+                io.imsave(str(dest / f"{date_name}.png"), rgb, check_contrast=False)
+                if img.shape[-1] >= 4:
+                    io.imsave(
+                        str(dest / f"{date_name}_mask.png"),
+                        np.array(img[:, :, 3], dtype=np.uint8),
+                        check_contrast=False,
+                    )
+            return
+
+        dest = new_dir / "nir"
+        dest.mkdir(parents=True, exist_ok=True)
+        if img.ndim == 2:
+            nir = np.array(img)
+        elif img.shape[-1] >= 8:
+            nir = np.array(img[:, :, 7])
         else:
-            img_arr = np.array(img[:, :, 3])
-            img_scaled = img_arr / 10000 * 255
-            io.imsave(str(new_path), img_scaled.astype(np.uint8), check_contrast=False)
-        os.remove(str(current_file))
+            nir = np.array(img[:, :, min(3, img.shape[-1] - 1)])
+        io.imsave(str(dest / f"{date_name}.png"), reflectance_to_uint8(nir), check_contrast=False)
+
+        # visual fallback is analytic_udm2: emit RGB from B,G,R when --rgb created rgb/.
+        rgb_dir = new_dir / "rgb"
+        rgb_path = rgb_dir / f"{date_name}.png"
+        if img.ndim == 3 and img.shape[-1] >= 3 and rgb_dir.is_dir() and not rgb_path.is_file():
+            io.imsave(str(rgb_path), reflectance_to_uint8(_bgr_to_rgb(img)), check_contrast=False)
 
     @staticmethod
     def write_to_log(message):
-        """
-        Writes a message to order_log.txt.
-        :param message: A message to be written.
-        :return: None
-        """
-        o = Path("order_log.txt")
-        if not o.is_file():
-            o.touch()
-        with o.open("a") as f:
-            f.write(message)
+        log = Path("order_log.txt")
+        if not log.is_file():
+            log.touch()
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(message)
 
     def bulk_order(self):
-        """
-        Create orders for all applicable rows in self.gdf, and download them.
-        :return: None
-        """
-        # List of orders to download
         orders_list = []
-        for i, r in self.gdf.iterrows():
-            # Get order for each desired bundle
-            print(f"Orders processing for {r['chain_id']}")
-            # Create an order for the row
-            created_orders = self.create_order(r)
+        for _, row in self.gdf.iterrows():
+            print(f"Orders processing for {row['chain_id']}")
+            created_orders = self.create_order(row)
             if created_orders:
-                # Add it to the order list
                 orders_list += created_orders
-                for o in created_orders:
-                    self.write_to_log(f"{o[0]['id']},{o[1]}\n")
+                for order in created_orders:
+                    self.write_to_log(f"{order[0]['id']},{order[1]}\n")
                 if self.params["verbose"]:
-                    print(f"\tOrders created for {r['chain_id']}")
-
-        # Download all the orders that were added
-        if len(orders_list) > 0:
+                    print(f"\tOrders created for {row['chain_id']}")
+        if orders_list:
             print(f"Last order in list will be {orders_list[-1][0]['id']}")
+            print("Re-run with --download once Planet emails you or after a few minutes.")
 
     @staticmethod
     def save_order_list(order_list):
-        """
-        Saves a list of orders to order_log.txt.
-        :param order_list: A list of orders to be saved.
-        :return: None
-        """
-        order_log = Path("order_log.txt")
-        with order_log.open("w") as f:
+        with Path("order_log.txt").open("w", encoding="utf-8") as handle:
             for order_info in order_list:
-                f.write(f"{order_info[0]['id']},{order_info[1]}\n")
+                handle.write(f"{order_info[0]['id']},{order_info[1]}\n")
 
     @staticmethod
     def update_complete_log(order_list):
-        """
-        Appends the completed orders to order_log_complete.txt.
-        :param order_list: A list of complete orders.
-        :return: None
-        """
-        complete_order_log = Path("order_log_complete.txt")
-        with complete_order_log.open("a") as f:
-            f.write(f"{str(datetime.now())}\n")
+        with Path("order_log_complete.txt").open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now(timezone.utc).isoformat()}\n")
             for order_info in order_list:
-                f.write(f"{order_info[0]['id']},{order_info[0]['state']},{order_info[1]}\n")
-            f.write(f"{'*' * 15}\n")
+                handle.write(f"{order_info[0]['id']},{order_info[0].get('state')},{order_info[1]}\n")
+            handle.write(f"{'*' * 15}\n")

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "construction-site-satellite-imagery"
+version = "2.0.0"
+description = "Extract OSM construction sites and download Sentinel-2 / Planet imagery over their lifetimes."
+readme = "README.md"
+license = { text = "GPL-3.0-only" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Nicholas Kashani Motlagh" },
+  { name = "Aswathnarayan Radhakrishnan" },
+  { name = "Jim Davis" },
+  { name = "Roman Ilin" },
+]
+maintainers = [
+  { name = "Nicholas Kashani Motlagh" },
+]
+keywords = [
+  "openstreetmap",
+  "sentinel-2",
+  "planet",
+  "construction",
+  "satellite-imagery",
+]
+dependencies = [
+  "geopandas>=1.0",
+  "matplotlib>=3.8",
+  "shapely>=2.0",
+  "pillow>=10.0",
+  "sentinelhub>=3.11",
+  "planet>=3.0",
+  "requests>=2.31",
+  "scikit-image>=0.22",
+  "osmium>=4.0",
+  "python-dotenv>=1.0",
+  "pyogrio>=0.9",
+  "pystac-client>=0.8",
+  "planetary-computer>=1.0",
+  "rasterio>=1.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+notebook = ["jupyterlab>=4.0"]
+
+[project.urls]
+Homepage = "https://github.com/nmotlagh/Construction-Site-Satellite-Imagery-Collection"
+Upstream = "https://github.com/osu-cvl/Construction-Site-Satellite-Imagery-Collection"
+Paper = "https://openaccess.thecvf.com/content/ICCV2021W/LUAI/papers/Motlagh_A_Framework_for_Semi-Automatic_Collection_of_Temporal_Satellite_Imagery_for_ICCVW_2021_paper.pdf"
+
+[project.scripts]
+cssic = "cli:main"
+
+[tool.setuptools]
+py-modules = [
+  "cli",
+  "credentials",
+  "dates",
+  "extract_ohsome",
+  "extract_sites",
+  "gather_images",
+  "osmhandler",
+  "planet_helper",
+  "polyfile",
+  "reset_extract",
+  "reset_images",
+  "sentinel_stac",
+  "way_chain",
+  "workspace",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

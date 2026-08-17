@@ -9,40 +9,49 @@ __author__ = """Nicholas Kashani Motlagh @ Ohio State University\n
 __email__ = 'davis.1719@osu.edu'
 __date__ = "2020-08-05"
 
-# Built-in/Generic Imports
-import os
 from pathlib import Path
 import shutil
 
+from workspace import COLLECTION_DIR, OUTPUT_DIR, SNAPSHOT_DIR
 
-def reset():
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.is_file() or path.is_symlink():
+        path.unlink()
+
+
+def reset() -> None:
     """
-    Resets temp/ such that it only contains snapshots/ and completed_sites/.
-    Resets output/ such that it only contains collection/.
-    Deletes the outputpoly.osh.pbf file.
-    :return:
+    Recreate a clean extract workspace:
+    ``temp/snapshots/`` (empty) and ``output/collection/`` (empty).
+    Deletes ``outputpoly.osh.pbf`` if present.
+    Missing directories are created rather than treated as an error.
     """
-    snapshots_paths = Path("temp/snapshots")
-    # delete all snapshots
-    for snapshot in snapshots_paths.glob("*"):
-        snapshot.unlink()
-    #  delete all dirs in output except collection dir
-    output_path = Path("output")
-    collection_path = output_path / "collection"
-    for output in output_path.glob("*"):
-        if "collection" in output.parts:
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    for snapshot in SNAPSHOT_DIR.glob("*"):
+        _remove_path(snapshot)
+
+    for output in OUTPUT_DIR.glob("*"):
+        if output.name == "collection":
             continue
-        if output.is_dir():
-            shutil.rmtree(str(output))
-        else:
-            output.unlink()
+        _remove_path(output)
 
-    # Delete all files in collection
-    for collection in collection_path.glob("*"):
-        collection.unlink()
-    # Delete output poly
-    if os.path.isfile("outputpoly.osh.pbf"):
-        os.remove("outputpoly.osh.pbf")
+    if COLLECTION_DIR.is_dir():
+        for item in COLLECTION_DIR.glob("*"):
+            _remove_path(item)
+    else:
+        COLLECTION_DIR.mkdir(parents=True, exist_ok=True)
+
+    poly = Path("outputpoly.osh.pbf")
+    if poly.is_file() or poly.is_symlink():
+        poly.unlink()
+
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    COLLECTION_DIR.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":

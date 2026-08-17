@@ -9,6 +9,8 @@ This module also contains functions to convert a WayChainMap to a geopandas data
 this module will also generate daily shape files of construction sites in a region of interest.
 """
 
+from __future__ import annotations
+
 __author__ = """Nicholas Kashani Motlagh @ Ohio State University\n
                 Aswathnarayan Radhakrishnan @ Ohio State University\n
                 Jim Davis @ Ohio State University (Point of Contact, see __email__)\n
@@ -17,67 +19,122 @@ __email__ = 'davis.1719@osu.edu'
 __date__ = "2020-08-05"
 
 # Built-in/Generic Imports
-from datetime import date, timedelta
-import getopt
-from pathlib import Path
+from datetime import date, datetime, timedelta
+import argparse
+from typing import Any
 import shutil
 import subprocess
 import sys
-import time
 import os
 
 # Own modules
-from osmhandler import OSMHandler
 import way_chain
+from workspace import (
+    COLLECTION_DIR,
+    OUTPUT_DIR,
+    SNAPSHOT_DIR,
+    TEMP_DIR,
+    setup_directory,
+)
 
 # Parameters used throughout the module
 params = {"start": None, "end": None, "poly": None, "region": None, "keep-temp": False, "restrict-window": False,
           "save-wip": False}
 
 # File paths that are used in the script
-temp_dir = Path("temp")
-snapshot_dir = temp_dir / "snapshots"
+temp_dir = TEMP_DIR
+snapshot_dir = SNAPSHOT_DIR
 ids_filtered_path = snapshot_dir / "out.osh.pbf"
 tag_filtered_path = snapshot_dir / "filtered.osh.pbf"
-output_dir = Path("output/")
-collection_dir = output_dir / "collection"
+output_dir = OUTPUT_DIR
+collection_dir = COLLECTION_DIR
 
 
-def set_params(p):
+def require_osmium() -> None:
+    if shutil.which("osmium") is None:
+        sys.exit(
+            "osmium-tool is not on PATH. Install it first "
+            "(Debian/Ubuntu: sudo apt install osmium-tool; macOS: brew install osmium-tool)."
+        )
+
+
+def run_osmium(*args: str) -> None:
+    cmd = ["osmium", *args]
+    if "-o" in args and "--overwrite" not in args:
+        cmd.append("--overwrite")
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"{' '.join(cmd)} failed ({result.returncode}):\n{detail}")
+
+
+def _osm_handler():
+    """Lazy-import OSMHandler so CLI/date tests do not require pyosmium."""
+    from osmhandler import OSMHandler
+
+    return OSMHandler()
+
+
+def _parse_iso_date(value: str | date | datetime | None) -> date:
+    """Parse an ISO date string or pass through a datetime.date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        raise TypeError("date must be an isoformat string or datetime.date")
+    return date.fromisoformat(value)
+
+
+def set_params(p: dict) -> None:
     """
     Sets the module parameters to p. p is checked for correct start and end dates first.
+    Start is validated before end so dict insertion order cannot skip start conversion.
     :param p: The dictionary used to assign params.
     :return: None
     """
     global params
     # Initialize params each time
-    params = {"start": None, "end": None, "poly": None, "region": None, "keep-temp": False, "restrict-window": False,
-              "save-wip": False}
+    params = {"start": None, "end": None, "poly": None, "region": None, "backend": "ohsome",
+              "keep-temp": False, "restrict-window": False, "save-wip": False}
 
+    if "start" in p:
+        p["start"] = check_start_date(p["start"])
+    if "end" in p:
+        p["end"] = check_end_date(p["end"], p.get("start"))
     for k in p.keys():
-        if k == "start":
-            p[k] = check_start_date(p[k])
-        elif k == "end":
-            p[k] = check_end_date(p[k], p["start"])
-        elif k in ["poly", "region"]:
+        if k in ("start", "end"):
+            continue
+        if k in ("poly", "region"):
+            if not p[k]:
+                p[k] = None
+                continue
             p[k] = check_file_path(p[k])
-        elif k in ["restrict-window", "save-wip", "keep-temp"]:
+        elif k in ("restrict-window", "save-wip", "keep-temp"):
             p[k] = check_boolean(k, p[k])
-    # Check for a missing param
+        elif k == "backend":
+            if p[k] not in ("ohsome", "osmium"):
+                print(f"ERROR: backend must be ohsome or osmium, got {p[k]}")
+                p[k] = None
+    backend = p.get("backend", params["backend"])
+    # Check for a missing param. ohsome does not need a history dump.
     for k in p.keys():
         if p[k] is None:
+            if k == "region" and backend == "ohsome":
+                params[k] = None
+                continue
             return
         params[k] = p[k]
 
 
-def check_start_date(start):
+def check_start_date(start: str | date | datetime | None) -> date | None:
     """
-    Checks that the user entered a valid start date after 2015-06-23
-    :param start: Start date entered by user
+    Checks that the user entered a valid start date on or after 2015-06-22.
+    :param start: Start date entered by user (isoformat string or datetime.date)
     :return: A datetime.date object representing the start date
     """
     try:
-        start_date = date.fromisoformat(start)
+        start_date = _parse_iso_date(start)
     except (ValueError, TypeError):
         print("ERROR: Start date must be in isoformat yyyy-mm-dd!")
         return None
@@ -87,10 +144,10 @@ def check_start_date(start):
     return start_date
 
 
-def check_end_date(end, start_date):
+def check_end_date(end: str | date | datetime | None, start_date: date | None) -> date | None:
     """
     Checks that the user entered a valid end date which falls after start date and 10 days before today
-    :param end: User end date in string format yyyy-mm-dd
+    :param end: User end date in string format yyyy-mm-dd or a datetime.date
     :param start_date: User start date as datetime.date object
     :return: A datetime.date object representing the end date
     """
@@ -98,7 +155,12 @@ def check_end_date(end, start_date):
         print("ERROR: Enter start date before end date.")
         return None
     try:
-        end_date = date.fromisoformat(end)
+        start_date = _parse_iso_date(start_date)
+    except (ValueError, TypeError):
+        print("ERROR: Enter start date before end date.")
+        return None
+    try:
+        end_date = _parse_iso_date(end)
     except (ValueError, TypeError):
         print("ERROR: End date must be in isoformat yyyy-mm-dd!")
         return None
@@ -111,19 +173,19 @@ def check_end_date(end, start_date):
     return end_date
 
 
-def check_file_path(filepath):
+def check_file_path(filepath: str | os.PathLike | None) -> str | None:
     """
     Check that filepath exists.
     :param filepath: Some filepath
     :return: Filepath or None if it does not exist
     """
-    if not os.path.isfile(filepath):
+    if filepath is None or not os.path.isfile(filepath):
         print(f"ERROR: File {filepath} does not exist!")
         return None
-    return filepath
+    return str(filepath)
 
 
-def check_boolean(name, arg):
+def check_boolean(name: str, arg: Any) -> bool | None:
     """
     Check that the argument named name is a boolean.
     :param name: Name of the argument passed
@@ -136,50 +198,63 @@ def check_boolean(name, arg):
     return arg
 
 
-def get_input():
-    """
-    Get input parameters from user and check they are correct. This is used when script is called from the command
-    line.
-    :return: parameter dictionary
-    """
-    # read commandline arguments, first
-    full_cmd_arguments = sys.argv
-    # - further arguments
-    argument_list = full_cmd_arguments[1:]
-    unix_options = 's:e:p:r'
-    gnu_options = ["start=", "end=", "poly=", "region=", "keep-temp", "restrict-window", "save-wip"]
+def get_input(argv: list[str] | None = None) -> dict:
+    """Parse command-line arguments for site extraction."""
+    parser = argparse.ArgumentParser(
+        description="Extract OSM construction sites in a polygon over a date window."
+    )
+    parser.add_argument("-s", "--start", required=True, help="Start date YYYY-MM-DD (on or after 2015-06-22)")
+    parser.add_argument("-e", "--end", required=True, help="End date YYYY-MM-DD (at least 10 days before today)")
+    parser.add_argument("-p", "--poly", required=True, help="Path to an Osmosis .poly file")
+    parser.add_argument(
+        "-r",
+        "--region",
+        default=None,
+        help="Path to an OSM history .osh.pbf file (required for --backend osmium)",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("ohsome", "osmium"),
+        default="ohsome",
+        help="ohsome API (default, no history dump) or original osmium daily snapshots",
+    )
+    parser.add_argument("--keep-temp", action="store_true", help="Keep daily osmium snapshots")
+    parser.add_argument(
+        "--restrict-window",
+        action="store_true",
+        help="Do not search before start / after end for true construction dates",
+    )
+    parser.add_argument("--save-wip", action="store_true", help="Also save in-progress sites")
+    args = parser.parse_args(argv)
 
-    try:
-        arguments, remaining = getopt.getopt(argument_list, unix_options, gnu_options)
-    except getopt.error as err:
-        # output error, and return with an error code
-        print(str(err))
+    start = check_start_date(args.start)
+    end = check_end_date(args.end, start)
+    poly = check_file_path(args.poly)
+    backend = args.backend
+    region = None
+    if backend == "osmium":
+        if not args.region:
+            print("ERROR: --region is required with --backend osmium")
+            sys.exit(2)
+        region = check_file_path(args.region)
+    elif args.region:
+        region = check_file_path(args.region)
+    for name, value in (("start", start), ("end", end), ("poly", poly)):
+        if value is None:
+            sys.exit(2)
+    if backend == "osmium" and region is None:
         sys.exit(2)
 
-    parameters = {"start": None, "end": None, "poly": None, "region": None, "keep-temp": False,
-                  "restrict-window": False, "wip-df": False}
-
-    # evaluate given options
-    for currentArgument, currentValue in arguments:
-        if currentArgument in ('-s', "--start"):
-            parameters["start"] = check_start_date(currentValue)
-        if currentArgument in ('-e', "--end"):
-            parameters["end"] = check_end_date(currentValue, parameters["start"])
-        if currentArgument in ('-p', "--poly"):
-            parameters["poly"] = check_file_path(currentValue)
-        if currentArgument in ('-r', "--region"):
-            parameters["region"] = check_file_path(currentValue)
-        if currentArgument == "--keep-temp":
-            parameters["keep-temp"] = True
-        if currentArgument == "--restrict-window":
-            parameters["restrict-window"] = True
-        if currentArgument == "--save-wip":
-            parameters["save-wip"] = True
-    for k in parameters.keys():
-        if parameters[k] is None:
-            print(f"ERROR: Provide a value for {k}!")
-            sys.exit(2)
-    return parameters
+    return {
+        "start": start,
+        "end": end,
+        "poly": poly,
+        "region": region,
+        "backend": backend,
+        "keep-temp": args.keep_temp,
+        "restrict-window": args.restrict_window,
+        "save-wip": args.save_wip,
+    }
 
 
 def fill_start(uc):
@@ -224,7 +299,7 @@ def fill_start_helper(ids_need_start, uc, current_date):
     global params
 
     # get all ids of ways from today
-    construction_f_handler = OSMHandler()
+    construction_f_handler = _osm_handler()
     daily_filtered_path = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     construction_f_handler.apply_file(daily_filtered_path)
 
@@ -301,7 +376,7 @@ def fill_end_helper(ids_need_end, uc, completed, current_date):
     # Filename of filtered construction of today
     daily_filtered_path = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     # get ways under construction for next day
-    boundary_construction_handler = OSMHandler()
+    boundary_construction_handler = _osm_handler()
     boundary_construction_handler.apply_file(daily_filtered_path)
     # A list of ways whose ends may have been found
     ways_end_found = []
@@ -341,7 +416,7 @@ def add_new_sites(uc, current_date):
     """
     # File name of only construction sites
     daily_filtered_file = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
-    construction_f_handler = OSMHandler()
+    construction_f_handler = _osm_handler()
     construction_f_handler.apply_file(daily_filtered_file)
     # A list of new sites which were found today
     new_sites = []
@@ -403,7 +478,15 @@ def generate_boundary_tags(current_date, transfer_ways, sites, mode=0):
     for way in transfer_ways:
         # get a sub-region out of the original output
         # minx, miny, maxx, maxy
-        way_region = sites.map[sites.find_key(way)].geometry.bounds
+        geom = sites.map[sites.find_key(way)].geometry
+        prepared = way_chain._prepare_geom(geom)
+        if prepared is None:
+            complete_ways.append(way)
+            continue
+        way_region = prepared.bounds
+        if any(coord != coord for coord in way_region):
+            complete_ways.append(way)
+            continue
         # padding to include ways around the way-region
         padding = 0.001
         # string in long1,lat1,long2,lat2 s.t. long1,lat1 and long2,lat2 are on opposite corners
@@ -414,13 +497,28 @@ def generate_boundary_tags(current_date, transfer_ways, sites, mode=0):
         boundary_f = str(snapshot_dir / f"{boundary_date}-{str(sites.get_way_chain(way).serial_no)}-boundary.osm")
         extract_f = str(snapshot_dir / f"{boundary_date}-{str(sites.get_way_chain(way).serial_no)}-extract.osh.pbf")
         # Get the smaller sub-region
-        subprocess.run(f"osmium extract -b {way_region_string} outputpoly.osh.pbf -o {extract_f} --with-history "
-                       f"--overwrite".split())
-        subprocess.run(f"osmium time-filter {extract_f} {boundary_date}T00:00:00Z -o {boundary_f} --overwrite".split())
+        run_osmium(
+            "extract",
+            "-b",
+            way_region_string,
+            "outputpoly.osh.pbf",
+            "-o",
+            extract_f,
+            "--with-history",
+            "--overwrite",
+        )
+        run_osmium(
+            "time-filter",
+            extract_f,
+            f"{boundary_date}T00:00:00Z",
+            "-o",
+            boundary_f,
+            "--overwrite",
+        )
         # get osmhandlers to the construction and boundary file
-        construction_f_handler = OSMHandler()
+        construction_f_handler = _osm_handler()
         construction_f_handler.apply_file(construction_f)
-        boundary_f_handler = OSMHandler()
+        boundary_f_handler = _osm_handler()
         boundary_f_handler.apply_file(boundary_f)
 
         # update sites to reflect end of construction
@@ -447,9 +545,8 @@ def update_existing_sites(uc, completed, current_date):
     # Get new only construction file for current date
     filtered_construction = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     candid_daily_snapshot = str(snapshot_dir / f"{str(current_date)}-candid.osm")
-    subprocess.run(
-        f"osmium tags-filter {candid_daily_snapshot} w/*=construction -o {filtered_construction}".split())
-    construction_f_handler = OSMHandler()
+    run_osmium("tags-filter", candid_daily_snapshot, "w/*=construction", "-o", filtered_construction)
+    construction_f_handler = _osm_handler()
     construction_f_handler.apply_file(filtered_construction)
     # list of keys that need to be transferred from uc to complete because they completed construction
     transfer_keys = []
@@ -469,23 +566,59 @@ def update_existing_sites(uc, completed, current_date):
         uc.map.pop(completed_way_key)
 
 
-def locate_construction():
-    """Locates construction zones that were in progress between start and end date of the search.
+def _save_gdf(gdf, stem: str) -> None:
+    """Write GeoPackage, GeoJSON, and Shapefile copies of a collection."""
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    gpkg = collection_dir / f"{stem}.gpkg"
+    geojson = collection_dir / f"{stem}.geojson"
+    shp = collection_dir / f"{stem}.shp"
+    gdf.to_file(gpkg, driver="GPKG")
+    gdf.to_file(geojson, driver="GeoJSON")
+    gdf.to_file(shp)
 
-    :return: Two WayChainMaps which contain completed and in progress construction zones as well as other info such
-        as tag, start date, end date, construction tag, previous tag, and post construction tag.
+
+def locate_construction() -> tuple[Any, Any]:
+    """Dispatch to ohsome (default) or the original osmium daily-snapshot backend."""
+    global params
+    if params.get("backend", "ohsome") == "ohsome":
+        from extract_ohsome import locate_construction_ohsome
+
+        return locate_construction_ohsome(params)
+    require_osmium()
+    return locate_construction_osmium()
+
+
+def locate_construction_osmium() -> tuple[Any, Any]:
+    """Paper-faithful extract: daily osmium snapshots + WayChain ID rewiring.
+
+    :return: In-progress and completed GeoDataFrames (or None).
     """
     print("Extracting polygon of history file")
+    setup_directory()
     get_outputpoly()
 
     global params
 
     # Filter for ways that have been buildings under construction before
-    subprocess.run(f"osmium tags-filter -R outputpoly.osh.pbf w/building=construction w/landuse=construction -o "
-                   f"{ids_filtered_path}".split())
-    # Get ways history which have ids of buildings from the filtered file above
-    subprocess.run(f"osmium getid --id-osm-file {ids_filtered_path} --with-history outputpoly.osh.pbf -o "
-                   f"{tag_filtered_path} --add-referenced".split())
+    run_osmium(
+        "tags-filter",
+        "-R",
+        "outputpoly.osh.pbf",
+        "w/building=construction",
+        "w/landuse=construction",
+        "-o",
+        str(ids_filtered_path),
+    )
+    run_osmium(
+        "getid",
+        "--id-osm-file",
+        str(ids_filtered_path),
+        "--with-history",
+        "outputpoly.osh.pbf",
+        "-o",
+        str(tag_filtered_path),
+        "--add-referenced",
+    )
 
     # iterate through each day and obtain snapshots
     delta = timedelta(days=1)
@@ -494,8 +627,13 @@ def locate_construction():
     print("Generating window snapshots")
     while current_date <= end_date:
         snapshot_path = str(snapshot_dir / f"{str(current_date)}-candid.osm")
-        subprocess.run(f"osmium time-filter {tag_filtered_path} {str(current_date)}T00:00:00Z -o "
-                       f"{snapshot_path}".split())
+        run_osmium(
+            "time-filter",
+            str(tag_filtered_path),
+            f"{current_date}T00:00:00Z",
+            "-o",
+            snapshot_path,
+        )
         current_date += delta
 
     # Initialize the under construction sites starting with the start date snapshot
@@ -522,9 +660,9 @@ def locate_construction():
     completed_gdf = completed.get_gdf()
     print("Saving GeoDataFrames")
     if uc_gdf is not None and params["save-wip"]:
-        uc_gdf.to_file(driver='ESRI Shapefile', filename=str(collection_dir / "in_progress.shp"))
+        _save_gdf(uc_gdf, "in_progress")
     if completed_gdf is not None:
-        completed_gdf.to_file(driver='ESRI Shapefile', filename=str(collection_dir / "collection.shp"))
+        _save_gdf(completed_gdf, "collection")
     if not params["keep-temp"]:
         for filepath in temp_dir.glob("*"):
             if filepath.is_dir():
@@ -544,10 +682,9 @@ def initialize_construction_map():
     # create snapshot of sites only under construction
     construction_f = str(snapshot_dir / f"filter_file_{str(params['start'])}_only_construction.osm")
     candid_start_snapshot = str(snapshot_dir / f"{str(params['start'])}-candid.osm")
-    subprocess.run(
-        f"osmium tags-filter {candid_start_snapshot} w/*=construction -o {construction_f}".split())
+    run_osmium("tags-filter", candid_start_snapshot, "w/*=construction", "-o", construction_f)
     # get construction sites as of start date
-    construction_f_handler = OSMHandler()
+    construction_f_handler = _osm_handler()
     construction_f_handler.apply_file(construction_f)
 
     # get way_ids of construction sites
@@ -573,11 +710,19 @@ def get_outputpoly():
     :return: None
     """
     global params
-    subprocess.run(f"osmium extract -p {params['poly']} {params['region']} "
-                   f"-o outputpoly.osh.pbf --with-history".split())
+    run_osmium(
+        "extract",
+        "-p",
+        str(params["poly"]),
+        str(params["region"]),
+        "-o",
+        "outputpoly.osh.pbf",
+        "--with-history",
+        "--overwrite",
+    )
 
 
-def create_dataset(gdf):
+def create_dataset(gdf) -> None:
     """
     Creates an info.txt file inside a chain directory for every completed chain
     :param gdf: The dataframe containing all way chains which need an info file.
@@ -586,10 +731,10 @@ def create_dataset(gdf):
     if gdf is None:
         print("GeoDataFrame contained no sites!")
         return
+    output_dir.mkdir(parents=True, exist_ok=True)
     for i, row in gdf.iterrows():
         chain_path = output_dir / f"{row['chain_id']}"
-        if not chain_path.is_dir():
-            chain_path.mkdir()
+        chain_path.mkdir(parents=True, exist_ok=True)
         info_file = chain_path / "info.txt"
         info_file.touch()
         bounds = row["geometry"].bounds
@@ -607,23 +752,17 @@ def generate_construction_snapshot(current_date):
     daily_snapshot_path = str(snapshot_dir / f"{str(current_date)}-candid.osm")
     daily_filtered_path = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     # Get snapshot of today
-    subprocess.run(
-        f"osmium time-filter {tag_filtered_path} {str(current_date)}T00:00:00Z -o {daily_snapshot_path}".split())
-    # Only keep changes that include ways under construction
-    subprocess.run(
-        f"osmium tags-filter {daily_snapshot_path} w/*=construction -o {daily_filtered_path}".split())
+    run_osmium(
+        "time-filter",
+        str(tag_filtered_path),
+        f"{current_date}T00:00:00Z",
+        "-o",
+        daily_snapshot_path,
+    )
+    run_osmium("tags-filter", daily_snapshot_path, "w/*=construction", "-o", daily_filtered_path)
 
 
 if __name__ == "__main__":
-
-    # Get correct input from user
     params = get_input()
-
-    # extract polygon osh pbf file from history file into ouputpoly.osh.pbf
-    get_outputpoly()
-
-    # Get construction sites and and also create their shape files
     wip_gdf, collection_gdf = locate_construction()
-
-    # create info files for each chain
     create_dataset(collection_gdf)

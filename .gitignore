@@ -1,0 +1,31 @@
+# Working data
+output/
+temp/
+*.osh.pbf
+outputpoly.osh.pbf
+order_log.txt
+order_log_complete.txt
+
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+*.pem
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# OS
+.DS_Store

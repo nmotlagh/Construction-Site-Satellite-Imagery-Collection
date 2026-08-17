@@ -1,413 +1,239 @@
-# Extracting Imagery of OpenStreetMap Construction Over Time
-This repo contains the official code for the paper ["A Framework for Semi-automatic Collection of Temporal Satellite Imagery for Analysis of Dynamic Regions"](https://openaccess.thecvf.com/content/ICCV2021W/LUAI/papers/Motlagh_A_Framework_for_Semi-Automatic_Collection_of_Temporal_Satellite_Imagery_for_ICCVW_2021_paper.pdf) by Nicholas Kashani Motlagh, Aswathnarayan Radhakrishnan, [Jim Davis](http://web.cse.ohio-state.edu/~davis.1719/), and Roman Ilin.
+# Construction Site Satellite Imagery Collection
 
+This repository extracts OpenStreetMap construction *ways* in a region of interest, then downloads multi-temporal RGB and/or NIR satellite chips that cover each site's construction window. It is the code for [A Framework for Semi-automatic Collection of Temporal Satellite Imagery for Analysis of Dynamic Regions](https://openaccess.thecvf.com/content/ICCV2021W/LUAI/papers/Motlagh_A_Framework_for_Semi-Automatic_Collection_of_Temporal_Satellite_Imagery_for_ICCVW_2021_paper.pdf) (ICCVW 2021 / LUAI).
 
-This project aims to extract construction information from a region of interest over time. The modules in this package 
-use data from
-OpenStreetMap to leverage information about the region. After information is extracted, multi-temporal RGB and/or NIR 
-imagery is collected from Sentinel-2 or Planet.
-This imagery spans the time that an OpenStreetMap "Way" (polygon) was under construction. If you would like to read more about
-OpenStreetMap ways, you can checkout this [link](https://wiki.openstreetmap.org/wiki/Way).
+## This fork (2026)
 
-This package was developed by  
+This is Nick Kashani Motlagh's **personal-GitHub modernization** of the original Ohio State CVL package, kept after graduating OSU. Upstream remains [`osu-cvl/Construction-Site-Satellite-Imagery-Collection`](https://github.com/osu-cvl/Construction-Site-Satellite-Imagery-Collection) and is not modified here.
 
-    Nicholas Kashani Motlagh, Aswathnarayan Radhakrishnan, Jim Davis @ Ohio State University  
-    {kashanimotlagh.1,radhakrishnan.39,davis.1719}@osu.edu  
-    
-    and  
-    
-    Roman Ilin @ AFRL/RYAP, Wright-Patterson AFB  
-    rilin325@gmail.com  
+v2 targets **Python 3.10+**. Default extract uses the [ohsome API](https://docs.ohsome.org/ohsome-api/stable/) (no Geofabrik history dump). Sentinel chips can come from **Planetary Computer STAC** (`-s stac`) or the **Copernicus Data Space Process API** (`-s s`). Planet uses **PSScene + Orders API v2**. The 2020 osmium daily-snapshot backend is still there as `--backend osmium`. The license is still **GPL-3.0**.
 
-Should you have any questions, the principal point-of-contact is Dr. Jim Davis. This package was modified on 2020-08-05.
+Original authors, still credited:
 
-## Prerequisites
-First, you must install all dependencies. To use these modules, first download osmium-tool using the following 
-instructions based on your operating system.  
-### macOS
-Install homebrew via this [link](https://brew.sh/).  
-Install osmium-tool via `brew`:  
+- Nicholas Kashani Motlagh, Aswathnarayan Radhakrishnan, and [Jim Davis](http://web.cse.ohio-state.edu/~davis.1719/) (Ohio State University)
+- Roman Ilin (AFRL/RYAP, Wright-Patterson AFB)
 
-`brew install osmium-tool`
+**Point of contact for this fork:** Nick ([@nmotlagh](https://github.com/nmotlagh)). The original OSU contact `davis.1719@osu.edu` is retained as author credit, not as the support address for this repo.
 
-### Debian Linux  
-Install osmium-tool via `apt`:
+There is **no GUI on purpose**. ohsome queries and osmium jobs can be long; Planet orders use quota. Use the CLI or `demo.ipynb`.
 
-`sudo apt install -y osmium-tool`
+## Install
 
-### Other
-If you are using a different distribution of Linux or Windows, you will first need to install some prerequisite libraries.
-Check the [project repository](https://github.com/osmcode/osmium-tool) for detailed instructions to download and build libraries from source.  
+1. **Optional**, only if you want the paper-faithful osmium backend: install the **osmium-tool** system package (the `osmium` Python wheel is not enough):
 
-If you are a Windows user, consider downloading the [Ubuntu shell for Windows 10](https://www.microsoft.com/en-us/p/ubuntu/9nblggh4msv6?activetab=pivot)
-to make the process easier. If you do not have access to the windows store, the directions below include instructions to manually install.
+   - Debian / Ubuntu: `sudo apt install -y osmium-tool`
+   - macOS: `brew install osmium-tool`
+   - Other OS: build from [osmcode/osmium-tool](https://github.com/osmcode/osmium-tool). On Windows, WSL + Ubuntu is the least painful path.
 
-<details>  
-<summary>Ubuntu VM instructions for Windows</summary>
+   Confirm with `osmium --version`.
 
-+ Manual install
-  + Install the Ubuntu 20.04 distro from: https://docs.microsoft.com/en-us/windows/wsl/install-manual
-  + In powershell run `Add-AppxPackage .\{downloaded file ending with appx}`
-+ In powershell run `Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux`
-+ Restart the computer
-+ Open the Ubuntu application and setup an account
-+ Run `sudo apt update`
-+ Install osmium-tool with `sudo apt install -y osmium-tool`
-+ Download miniconda (optional but preferred) from https://docs.conda.io/en/latest/miniconda.html#linux-installers (use `wget {link}`). 
-  + Run `bash {name of the downloaded file}`.
-  + Answer `yes` to all prompts.
-  + After conda is installed, close the session and restart it. 
-  + Run `conda --version` to verify that conda was successfully installed.
-+ Add the `/home/{username}/.local/bin` to PATH with  
-```echo "export PATH=\"/home/{username}/.local/bin:\$PATH\"" >> .bashrc```.  
-+ Run `source .bashrc`.  
-+ **Note**: You can access the Windows file system from the `/mnt` directory. For example, the Windows Users directory 
-is located at `/mnt/c/Users/{user}`.
-</details>
-<br>
+2. Create a virtualenv with Python 3.10+, then install this package (editable, with tests and the notebook extra):
 
-Check that osmium installed correctly with `osmium --version`  
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e ".[dev,notebook]"
+   ```
 
-Next, you will need to create an environment and install all dependencies using either Conda or pip using the instructions below.
+`pyproject.toml` is the source of truth. `requirements.txt` lists the same runtime pins for people who prefer a plain `pip install -r`. Descartes is gone; do not install it.
 
-### Conda  
-If you do not have conda downloaded, refer to these links: 
-[macOS](https://docs.conda.io/projects/conda/en/latest/user-guide/install/macos.html), 
-[Linux](https://docs.conda.io/projects/conda/en/latest/user-guide/install/linux.html), 
-[Windows](https://docs.conda.io/projects/conda/en/latest/user-guide/install/windows.html). 
-If you are using Ubuntu on Windows, you have already installed conda in the previous step.
+## Credentials
 
-Next, run the following. **Note, osmium can only be installed through pip.**  
+Copy the example env file and fill in **new** keys. Do not commit `.env` or API keys.
 
-`conda config --append channels conda-forge`  
-`conda create --name {env name} --file requirements_conda.txt python=3.7`  
-`conda activate {env name}`   
-`pip install osmium`
-
-If you're using Conda you can skip the next step and directly run the Demo.
-
-### Pip
-If you are only using **pip**, then run
-
-`sudo apt install python3-venv`  
-`python3 -m venv {env name}` 
-
-If on windows:  
-`{env name}\Scripts\activate`  
-
-If on macOS or Linux:  
-`source {env name}/bin/activate`  
-
-Then run  
-`pip install -r requirements_pip.txt`  
-
-### Demo
-You are now equipped to run `demo.ipynb`. If you would like to step through the walk-through, run the command `jupyter lab` on the terminal from the root directory of this repository and open `demo.ipynb`.
-
-### Acquiring History Files
-To download a history file, you will need an OSM account.
-This is free and quick to do. Simply navigate to the [registration page](https://www.openstreetmap.org/user/new). Once you have made an account, you can download history files
-found [here](http://download.geofabrik.de). Make sure that you scroll to "Other Formats and Auxillary Files" and find the line containing
-a crossed-out .osh.pbf history file. Click the link "internal server". Then click
-"Login with you OpenStreetMap account" and enter credentials. After you are logged in, you will be able to download the 
-previously crossed-out internal.osh.pbf history file.
-
-### Creating Poly Files
-Next, gather a .poly file containing the polygon coordinates of
-the region of interest to search. The polygon defined in the .poly file should be contained in the history file. More 
-information about .poly files can be found [here](https://wiki.openstreetmap.org/wiki/Osmosis/Polygon_Filter_File_Format).
-
-
-
-## Usage
-Gathering imagery of OpenStreetMap construction sites is split into two main tasks: constructing a GeoDataFrame of all 
-construction sites and retrieving images which correspond to those construction sites.
-A GeoDataFrame is a datatype from the geopandas module which represents a table of data for areas including the coordinates that define the area.
-You can read more about GeoDataFrames [here](https://geopandas.org/reference/geopandas.GeoDataFrame.html).
-
-## Step 1: Site Extraction
-In order to gather imagery of OpenStreetMap construction sites, we must first create a GeoDataFrame using the following 
-modules. `setup` will be used to create the necessary directories. 
-Then, `extract_sites` will be used to create a GeoDataFrame of construction sites from an OpenStreetMap history file.
-
-### Setup
-The directory structure required for the extract_sites module is below.
+```bash
+cp .env.example .env
 ```
-temp/
-    snapshots/
-    
-output/
-   collection/
+
+| Provider | What to set | Notes |
+| --- | --- | --- |
+| **Planet** | `PLANET_API_KEY` **or** leave it empty and run `planet auth login` | Legacy Planet keys still work if you have them. Nick may need a new key. |
+| **Sentinel-2 STAC** | none | `cssic gather -s stac` uses Planetary Computer. No CDSE account. |
+| **Sentinel-2 Process API** | `SH_CLIENT_ID` and `SH_CLIENT_SECRET` from a CDSE OAuth client; `SENTINEL_PROVIDER=cdse` | Create the client at the [Copernicus Data Space Sentinel Hub dashboard](https://shapps.dataspace.copernicus.eu/dashboard/#/account/settings). Copy the secret immediately; it is shown once. |
+
+**Old Sentinel Hub instance IDs will not work.** The 2020-era `apps.sentinel-hub.com` configuration / instance-id flow is gone. CDSE OAuth clients are not interchangeable with commercial Sentinel Hub clients. Optional commercial Sentinel Hub is still wired (`SENTINEL_PROVIDER=sentinelhub`), but the default is free CDSE.
+
+You can override credentials on the gather command (`--api`, `--sh-client-id`, `--sh-client-secret`, `--sentinel-provider`) instead of using `.env`.
+
+## CLI
+
+After install, the `cssic` entry point (`cssic = "cli:main"`) wraps the original modules:
+
+```bash
+cssic setup
+cssic extract -s YYYY-MM-DD -e YYYY-MM-DD --poly poly/campus.poly
+cssic extract -s YYYY-MM-DD -e YYYY-MM-DD --poly poly/campus.poly --backend osmium --region ohio-internal.osh.pbf
+cssic gather -s stac --rgb --nir -n 3
+cssic gather -s s --rgb --nir -n 3          # Sentinel Hub / CDSE Process API
+cssic gather -s p --rgb --nir -n 3
+cssic gather -s p --download
+cssic reset-extract
+cssic reset-images
 ```
-You can create this by running `python setup.py` from the commmand line. Or, you can run
+
+The original scripts still work and take the same flags:
+
+```bash
+python workspace.py
+python extract_sites.py -s YYYY-MM-DD -e YYYY-MM-DD --poly poly/campus.poly
+python extract_sites.py -s YYYY-MM-DD -e YYYY-MM-DD --poly poly/campus.poly --backend osmium --region ohio-internal.osh.pbf
+python gather_images.py --source stac --rgb --nir --num-images 3
+python gather_images.py --source p --rgb --nir --num-images 3
+python reset_extract.py
+python reset_images.py
+```
+
+Walk through the same two-step story (extract sites, then gather images) in `demo.ipynb`:
+
+```bash
+jupyter lab
+```
+
+## History files (Geofabrik `.osh.pbf`)
+
+Only needed for **`--backend osmium`**. Default ohsome extract does not download a history dump.
+
+Extraction then needs a **full-history** extract that contains your polygon, not a current snapshot `.osm.pbf`.
+
+1. Create a free [OpenStreetMap account](https://www.openstreetmap.org/user/new).
+2. Open the regional page on [download.geofabrik.de](https://download.geofabrik.de) (Ohio demo: [north-america/us/ohio.html](https://download.geofabrik.de/north-america/us/ohio.html)).
+3. Scroll to **Other Formats and Auxiliary Files**. The history file (`.osh.pbf`) is served from Geofabrik's **internal** server and requires an OSM login: [osm-internal.download.geofabrik.de](https://osm-internal.download.geofabrik.de/).
+4. Click **internal server**, sign in with your OSM account, and download the previously crossed-out `*-internal.osh.pbf` file.
+
+Keep `*.osh.pbf` out of git (already in `.gitignore`). These files are large and carry OSM contributor metadata.
+
+## Demo polygon
+
+`poly/campus.poly` is an **approximate bounding box** around the Ohio State University Columbus campus, in [Osmosis polygon](https://wiki.openstreetmap.org/wiki/Osmosis/Polygon_Filter_File_Format) format (`lon lat` rings). It is meant for the demo, not a cadastral campus boundary. The polygon must sit inside the history file you download (Ohio, in this case).
+
+To search a different region, write another `.poly` or grab a regional poly from Geofabrik's "Other Formats" section.
+
+## Step 1: extract construction sites
+
+`cssic setup` (or `python workspace.py` / `from workspace import setup_directory`) creates:
+
+```
+temp/snapshots/
+output/collection/
+```
+
+Then extract sites that were under construction between `--start` and `--end`. **Default `--backend ohsome`** asks HeiGIT's ohsome API for construction-tag lifetimes inside the poly. No `.osh.pbf` required. Completed sites are written as GeoPackage, GeoJSON, and Shapefile under `output/collection/collection.*`.
+
+ohsome tracks each OSM id. It does not reconstruct the 2020 WayChain ID-rewiring / prev-final tag logic. For that paper-faithful path, use `--backend osmium --region history.osh.pbf`.
+
+```bash
+cssic extract -s 2018-04-15 -e 2020-07-01 --poly poly/campus.poly
+cssic extract -s 2018-04-15 -e 2020-07-01 --poly poly/campus.poly \
+  --backend osmium --region path/to/ohio-internal.osh.pbf
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `-s` / `--start` | Search start (`YYYY-MM-DD`), on or after **2015-06-22** |
+| `-e` / `--end` | Search end, at least **10 days before today** |
+| `-p` / `--poly` | Osmosis `.poly` of the search region |
+| `--backend` | `ohsome` (default) or `osmium` |
+| `-r` / `--region` | Geofabrik history `.osh.pbf` (**osmium only**) |
+| `--keep-temp` | Keep daily osmium snapshots (useful for QGIS) |
+| `--restrict-window` | Do not walk before start / after end to recover true dates |
+| `--save-wip` | Also save in-progress sites as `output/collection/in_progress.*` |
+
+Each completed site also gets `output/{chain_id}/info.txt`:
+
+`start_date,end_date,previous_tag,final_tag,minx,miny,maxx,maxy`
+
+`cssic reset-extract` deletes extract outputs (including `output/collection/`). Copy anything you want to keep first.
+
+Python equivalent:
+
 ```python
-from setup import setup_directory
-setup_directory()
-```
-
-### Obtaining GeoDataFrames
-This module will record all construction sites that were under construction in between the
-start and end window given in the arguments and save the file as a GeoDataFrame found in `output/collection/collection.shp`. 
-If a construction site began or ended outside the window, but it was under construction inside the window,
-it will appear in the GeoDataFrame with correct start and end dates. 
-
-The GeoDataFrame will contain a row for each construction site observed. Each row has a unique "chain_id" identifier 
-followed by a start date, end date, construction type, previous tag, final tag, and polygon coordinates which define a 
-bounding box containing the construction shape.
- 
-To extract a GeoDataFrame of construction sites, run  
-`python extract_sites.py -s <start_date: YYYY-MM-DD> -e <end_date: YYYY-MM-DD> --poly=<poly file> --region=<region_file> 
-<optional: --keep-temp> <optional: --restrict-window> <optional: --save-wip>`   
-
-`-s` or `--start` is the starting date of the search. The module will only find construction sites which were under 
-construction on or after this date. The start date must be on or after 2015-06-22.
-
-`-e` or `--end` is the ending date of the search. The module will only find construction sites which were under construction on or before this date.
-The end date must be on or before 10 days from today's date.
-
-`-p` or `--poly` is a poly file containing the a polygon in lat/long of the region to search over.
-
-`-r` or `--region` is an OSM history file which contains the polygon you are searching over.
-
-`--keep-temp` is a flag which when set will not delete all daily snapshots or completed site shape files recorded during
- the execution of the module. This flag should be used when you
-would like to import a snapshot into GIS software such as QGIS to take a closer look at a construction site. (Default: False)
-
-`--restrict-window` is a flag which when set will restrict the search to only the dates listed. That is, any site that
- was completed before the end date will appear in the `output/collection/collection.shp` file. Note that if a site has a
- start date which is the start date of the search, this may not be the true start date of construction; however, the end
- date will be correct. (Default: False)
-
-`--save-wip` is a flag which when set will save the work-in-progress construction sites as a GeoDataFrame. This dataframe can
-be found in `output/collection/in_progress.shp`. (Default: False)
-
-For example, let's say we ran a search from 2015-06-23 to 2016-06-23.
-If a construction site began on 2015-01-20 and ended on 2016-07-01, it will be extracted and recorded in 
-`output/collection/collection.shp` with its corresponding start and end dates.
-
-An info file for each construction site can be found at `output/{chain_id}/info.txt`. 
-The file contains data from the GeoDataFrame as a comma separated list: `start_date,end_date,construction_type,previous_tag,final_tag,minx,miny,maxx,maxy` where minx, miny, maxx, maxy are the coordinates of the bounding box that contains the construction site.
-
-If you would like to use this module in other programs, you can import the module and use it as follows
-```python
+from workspace import setup_directory
 import extract_sites
-params = {} # Fill with parameter name:value pairs ("start":"2019-02-02", "end", "poly", "region"...)
-extract_sites.set_params(params)
 
-# Get GeoDataFrames of in-progress sites and complete sites
-in_progress_gdf, collection_gdf = extract_sites.locate_construction()
-# Create an info.txt file for each row of "complete" construction sites
+setup_directory()
+extract_sites.params = extract_sites.get_input([
+    "--start", "2018-04-15",
+    "--end", "2020-07-01",
+    "--poly", "poly/campus.poly",
+])
+_, collection_gdf = extract_sites.locate_construction()
 extract_sites.create_dataset(collection_gdf)
 ```
 
-Often times, you may want to run the script multiple times. To clear the directories that were created, simply run  
- `python reset_extract.py`  
- 
- or
- 
- ```python
-import reset_extract
-reset_extract.reset()
+Osmium / paper-faithful path: add `"--backend", "osmium", "--region", "ohio-internal.osh.pbf"` to `get_input`.
+
+## Step 2: gather imagery
+
+Gather **at least one** of `--rgb` / `--nir`. Images are sampled evenly across each site's construction window (including start and end). `--num-images` must be `>= 3`, or `-1` for every available date.
+
+```bash
+# Sentinel-2 via Planetary Computer STAC (no CDSE key)
+cssic gather -s stac --rgb --nir -n 3 --verbose
+
+# Planet: place PSScene orders (visual + analytic)
+cssic gather -s p --rgb --nir -n 3 --verbose
+
+# Later, download completed Planet orders
+cssic gather -s p --rgb --nir --download
+
+# Sentinel-2 L2A via Copernicus Data Space Process API
+cssic gather -s s --rgb --nir -n 3 --verbose
 ```
 
-Please save the files in `output/` to another location before running reset because it will be deleted.
+| Flag | Meaning |
+| --- | --- |
+| `-s` / `--source` | `stac`, `p` / `planet`, or `s` / `sentinel` |
+| `-n` / `--num-images` | Samples per site (`>= 3` or `-1`); default `3` |
+| `-p` / `--padding` | Area scale of the bounding box (center-invariant; `1` = exact box) |
+| `-C` / `--rgb` | Visible chips |
+| `-N` / `--nir` | Near-infrared chips |
+| `-v` / `--verbose` | Progress logs |
+| `-e` / `--email` | Planet email when an order is ready |
+| `--api` | Planet API key (otherwise `PLANET_API_KEY` or `planet auth login`) |
+| `--download` / `--download-planet` | Download previously placed Planet orders |
+| `--sh-client-id` / `--sh-client-secret` | CDSE / Sentinel Hub OAuth (otherwise `.env`) |
+| `--sentinel-provider` | `cdse` (default) or commercial `sentinelhub` |
 
-## Step 2: Image Gathering
-To gather images of construction sites that were identified in the previous script, run
+Planet imagery is a two-step **order then download**. Sites that started before **2017-02-19** are skipped. Sentinel-2 STAC and Process API skip sites before **2015-06-23**.
 
-`python gather_images.py --source=<s or p> --num-images=(an int >= 3 or -1 for all images) --api=<API KEY>
-<optional: --padding=int> <optional: --rgb> <optional: --nir> <optional: --verbose> <optional: --email> 
-<optional: --download-planet> <optional: --verbose>`
+If you already know the imagery source, set extract `--start` to the day before that cutoff (**2015-06-22** Sentinel, **2017-02-18** Planet) and pass `--restrict-window`.
 
-`-s` or `--source` is the source from which the script will gather images. If you are using Sentinel-2 use 's', otherwise,
-use 'p' for Planet.
+`cssic reset-images` deletes downloaded chips but leaves the collection table.
 
-`-n` or `--num-images` is the number of images you would like to gather for each construction site. Note that images are
-gathered in even increments throughout construction including the start date and the end date. So, this value must be greater than or
-equal to 3, or this value can be -1 if you would like to gather all images available in the construction window. (Default: 3)  
+Python equivalent (keys stay in the environment):
 
-`--api` is the API Key for the source that you are using.
-
-`-p` or `--padding` is the scale factor of the region you would like to capture an image for. By default this value is set to
-1 so that only the bounding box around the construction site will be extracted. If you would like to extract a larger region around a construction site,
-you can set this value to 2, for example, to get a bounding box whose area is twice as large as the bounding box which contains the construction: 
-the width and height of the bounding box are scaled by sqrt(2).  
-Note, the scaled bounding box is still center invariant. (Default: 1)  
-
-`-C` or `--rgb` will gather images from the visible light bands. (Default: False)  
-
-`-N` or `--nir` will gather images from the near infrared band. (Default: False)  
-
-`--email` is used to receive email notifications when downloading from Planet. Planet will send an email notification to the address
-registered with the API key when an order of imagery is ready for download. At least one order (sometimes more) will be created for each
-site in a GeoDataFrame. (Default: False)  
-
-`--download-planet` is used to download planet previously created orders. (Default: False)  
-
-`--verbose` If set to true the module will print progress updates. (Default: False) 
-
-
-This script will gather images from the listed source where `--source=s` corresponds to Sentinel-2 and `--source=p` corresponds to Planet.
-The script will gather `--num-images` images in between the start and end date of construction, evenly divided (as best as possible).
-If you'd like to acquire images with padding around the construction site, you can set a `--padding` value. This value 
-will scale the bounding box while staying center invariant.
-Add `--rgb` or `--nir` to select the bands to retrieve. Images of a certain construction site from a band (NIR/RGB)
-will be saved in `output/{chain_id}/images/{source}/{rgb or nir}/`.
-
-If you would like to use this module in other programs, you can import the module and use it as follows
 ```python
 import gather_images
-# Used to read in GeoDataFrame from collection file
-import geopandas as gpd
-# Used to create platform independent paths
-from pathlib import Path
 
-# Set parameters
-params = {} # Fill with parameter name:value pairs ("source":"p", "num-images":3, "padding", "rgb"...)
-gather_images.set_params(params)
-# If you are using sentinel
-gather_images.SENTINEL_INSTANCE_ID = ''
-# If you are using planet
-gather_images.PLANET_API_KEY = ''
-# Get the GeoDataFrame of the collection file
-collection_path = Path("output/collection/collection.shp")
-collection_gdf = gpd.read_file(str(collection_path))
-# Create the necessary directories
-gather_images.setup()
-# Get imagery
-gather_images.gather_from_source(collection_gdf)
-# Set download_planet to True to download imagery from planet.
-gather_images.gather_from_source(collection_gdf, download_planet=True)
-```
-If you would like to clear all directories created by the `gather_images.py` simply run `python reset_images.py`
-or  
-```python
-import reset_images
-reset_images.reset()
+gather_images.parameters = gather_images.get_input(
+    ["--source", "p", "--rgb", "--nir", "--num-images", "3", "--verbose"]
+)
+geodf = gather_images.setup()
+gather_images.gather_from_source(geodf)
+
+# After Planet orders succeed:
+gather_images.parameters["download-planet"] = True
+gather_images.gather_from_source(geodf)
 ```
 
-#### Using Planet
-Planet imagery is gathered in 2 steps: ordering and downloading.
-* An order is placed for every site after 2017-02-19 (no images will be gathered for a site that began before that date).
-* Planet imagery is sparse in 2017, but improves in more recent history.
-* You can download an order some time after it is created.
-* Each order can take between 5-15 minutes to download depending on the duration of construction.
-* You can set the email parameter to true to receive an email every time an order is ready.
+## Output
 
-#### Using Sentinel
-Sentinel imagery is gathered in one step. Imagery is gathered for every site on or after 2015-06-23 (no images will be gathered 
-for a site that began before that date).  
+RGB / NIR chips land at:
 
-In order to access imagery on sentinel hub, you must first create a new configuration on the sentinel dashboard found 
-at https://apps.sentinel-hub.com/dashboard/#/configurations.
+`output/{chain_id}/images/{planet|sentinel}/{rgb|nir}/{date_acquired}.png`
 
-<details>  
-<summary>Sentinel dashboard instructions</summary>
-    
-+ Click "New configuration"
-+ Enter in a name
-+ Select "Python scripts template" from the dropdown
-+ Edit your configuration
-+ Increase image quality to 100
-+ Click "Add a new layer"
-+ Name the new layer "NIR"
-+ Select "B08"
-+ Select "B08 - reflectance"
-+ Click "Copy script to editor"
-+ Click "Set custom script"
-+ Adjust the cloud coverage to 100
-+ Click "Save"
+Planet RGB may include `{date}_mask.png` (alpha / unusable pixels). Planet NIR may include `{date}_udm.tif` (unusable-data mask). If `--num-images -1`, days with no scene get `{date}_empty.png`.
 
-**Creating a new layer whose "ID" is "NIR" is vital here.** Parameters such as cloud coverage and atmospheric correction
- can be changed; however, we will leave these as is for the sake of this demo.
-</details>  
-  
-### Output
-RGB and NIR images will be saved as `output/{chain_id}/images/{source}/{rgb or nir}/{date_acquired}.png`.  
+## How extraction works
 
-RGB images from planet will also contain a mask for faulty peripheral pixels saved as `output/{chain_id}/images/{source}/rgb/{date_acquired}_mask.png`.
-In the RGB mask, all pixels marked with a 0 are faulty.  
+**Default (`--backend ohsome`)** POSTs the poly bbox to HeiGIT's [ohsome](https://docs.ohsome.org/ohsome-api/stable/) `elementsFullHistory/geometry` with filter `(landuse=construction or building=construction) and geometry:polygon`. Consecutive versions of the same OSM id are merged into one interval. Rows still tagged construction at `--end` are treated as in-progress (`prev_tag` / `final_tag` are `N/A`). ohsome does not reconstruct construction *chains* across OSM id changes.
 
-NIR images from planet will come with an unusable data mask which will be saved as `output/{chain_id}/images/{source}/nir/{date_acquired}_udm.tif`. 
-Check page 94 and 95 of https://assets.planet.com/docs/combined-imagery-product-spec-final-august-2019.pdf for more information on
-UDM files.
+**`--backend osmium`** is the ICCVW 2021 algorithm. `osmium` first clips the history file to the poly, then keeps ways that were tagged construction. The extractor takes daily snapshots, walks backward from `--start` to recover true start dates, records changes inside the window, then walks forward after `--end` (up to 10 days ago) to see whether in-window sites later completed. New sites found after the window are not added.
 
-In the case that all images are downloaded (`num-images` = -1), blank images will be saved for days which had no imagery. These images will be saved as
-`output/{chain_id}/images/{source}/{rgb or nir}/{date_acquired}_empty.png`
+Each GeoDataFrame row has `chain_id`, `start`, `end`, `constr_tag`, `prev_tag`, `final_tag`, and a bounding-box polygon. On the osmium path, previous / final tags are estimated from overlapping ways on the day before start and the day after end, ranked by intersection-over-union against a confidence threshold. Weak overlaps become `NO TAG FOUND`. A "construction chain" is the uncommon case where a finished site is immediately tagged construction again; those links are only kept if IOU exceeds `construction_chain_confidence`, so a previous/final tag is never literally `construction`.
 
-## How it works
-### Obtaining GeoDataFrames
-The module first extracts a history file of the polygon passed in the arguments using osmium-tool. This history file will only contain ways
-which were under construction at one point in time. 
-The extract_sites module will then take daily snapshots from the start date to the end date. These snapshots are named
-`temp/snapshots/{current date}-candid.osm`. From these daily snapshots, changes will be recorded. If a site
-was under construction on the start date of the search window, extract_sites will travel backwards in time, only checking for changes in sites that
-were under construction in the window. That is, any site that was not under construction in the specified time window will not
-be recorded. Once all sites at the start of the window have a start date, the module will record changes in construction inside the window.
-Once all construction changes inside the search window have been recorded, the module will search from the end of the window to 10 days before today's date
-to see if the site was completed after the window. No new sites that are found after the window will be added to the GeoDataFrame.
+Imagery dates are spaced as evenly as possible across `[start, end]`. Sentinel-2 revisits about every 5 days from 2015-06-23; Planet PSScene is daily after 2017-02-19, but coverage is thin in 2017. If a requested day has no scene, the next available image within a few days is used.
 
-In a GeoDataFrame, you will see columns chain_id, start, end, construction_type, prev_tag, final_tag, and geometry. The chain_id is a unique
-id which contains all way ids in a "construction chain" (more on this later) followed by a unique serial number. The start column
-is the date which construction was first observed. The end column is the last date which construction was observed. The construction
-type is the tag which was labeled construction (either building or landuse). The prev_tag and final_tag columns are the estimated tags of
-what the construction site was before and after construction, respectively. Note, these tags are just an estimate. The tag is computed
-by checking the site under construction on boundary dates: either the day before construction started or the day after construction ended.
-Any area that occupied the construction site on a boundary date is considered as a tag. All considered areas are sorted 
-from largest to smallest by the intersection over union (IOU):
+## License
 
-`area of intersection (with the construction site) / area of union (with the construction site)`
-
-If there is a tie, the smallest considered area is chosen. However, the "chosen" areas must meet an (IOU) threshold. 
-We call this `tag_confidence` in the code.
-This tag confidence exists to omit areas which graze through the construction site and are not representative of the construction.
-If a construction site has no previous or final tag, it is marked with "NO TAG FOUND". The `tag_confidence` value can be increased
-for more confident tag values. However, note that a larger threshold results in less final tags in the resulting GeoDataFrame.
-
-#### Example:
-Consider a parking lot that was under construction. The parking lot was transformed into a park; however, the park was not marked
-as an area on the day following construction. Instead, only a sidewalk was marked in the area. Because the side walk intersected the
-construction area, we consider it. But, because it is unlikely that IOU score of the sidewalk and construction is high,
-it is probably not chosen. Therefore, the final tag of the construction site would be marked as "NO TAG FOUND".
-
-#### Construction Chains:
-Not often, you will find that the final tag of a construction site will be another construction site. We call this special case
-a "construction chain". In this special case,
-we compare the IOU of the completed construction site with the new construction site against a confidence value called
- `construction_chain_confidence` in the code.
-To prevent false positives, it is good practice to keep this value high. If the IOU falls below the confidence value, the new construction area
-is discarded from the list of considered areas. This means that a final or previous tag will never be "construction".
-
-At the end of the module, a GeoDataFrame will be saved containing the chain_id, start date, end date, construction type (either building or landuse),
-the previous tag of the site, the final tag of the site, and a polygon bounding box containing the union of all changes to the site over the course of
-its time spent under construction. 
-
-#### Fetching Images
-The number of images specified in the arguments to the `gather_images` module will be fetched. These images are fetched
-as evenly as possible in between the start and end dates including the start date and the end date.
-Sentinel-2 captures images every 5 days starting 2015-06-23, while Planet captures images daily after 2017-02-19. If an 
-image is not available for a specific date,
-the next available image is gathered (up to 5 days after).
-Imagery will not be downloaded for construction sites whose start date falls before the source start date (2015-06-23 for
- Sentinel-2 and 2017-02-19 for Planet).
-
-#### Example
-The construction of a building took 40 days, and you would like to fetch 3 images. The first image fetched will be on the start date
-(up to 5 days after). The next image fetched will be on day 20 of construction (up to 5 days after). And the final image fetched will be on
-the last day of construction (up to 5 days after).
-
-#### Tips
-
-If you know which satellite imagery provider you will be using, set the start date of construction extraction to one day before the cut-off date
-for that provider (2015-06-22 for Sentinel-2, 2017-02-18 for Planet). Also set `restrict-window` to True.
-This will restrict the search window to only search for sites that were under construction the day before the cut-off date and no earlier.
-Then, when imagery is collected, all sites that were under construction before the cut-off date will not be considered.
-
-If you would like to download images for a GeoDataFrame not found in `output/collection/collection.shp`, you can pass the
-GeoDataFrame like so
-```python
-gather_images.setup(other_gdf=my_data_frame)
-...
-gather_images.gather_from_source(my_data_frame)
-```
-Note that imagery will still be saved to `output`.
+[GPL-3.0](LICENSE).
