@@ -63,6 +63,7 @@ py-modules = [
   "extract_sites",
   "gather_images",
   "osmhandler",
+  "parsers",
   "planet_helper",
   "polyfile",
   "reset_extract",

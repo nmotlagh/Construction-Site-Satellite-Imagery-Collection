@@ -20,7 +20,6 @@ __date__ = "2020-08-05"
 
 # Built-in/Generic Imports
 from datetime import date, datetime, timedelta
-import argparse
 from typing import Any
 import shutil
 import subprocess
@@ -29,6 +28,7 @@ import os
 
 # Own modules
 import way_chain
+from parsers import EXTRACT_FIELDS, build_extract_parser, namespace_to_dict
 from workspace import (
     COLLECTION_DIR,
     OUTPUT_DIR,
@@ -37,9 +37,17 @@ from workspace import (
     setup_directory,
 )
 
-# Parameters used throughout the module
-params = {"start": None, "end": None, "poly": None, "region": None, "keep-temp": False, "restrict-window": False,
-          "save-wip": False}
+# Notebook / set_params store. CLI and typed callers pass a dict instead.
+params = {
+    "start": None,
+    "end": None,
+    "poly": None,
+    "region": None,
+    "backend": "ohsome",
+    "keep-temp": False,
+    "restrict-window": False,
+    "save-wip": False,
+}
 
 # File paths that are used in the script
 temp_dir = TEMP_DIR
@@ -86,6 +94,10 @@ def _parse_iso_date(value: str | date | datetime | None) -> date:
     return date.fromisoformat(value)
 
 
+def _extract_cfg(p: dict | None) -> dict:
+    return params if p is None else p
+
+
 def set_params(p: dict) -> None:
     """
     Sets the module parameters to p. p is checked for correct start and end dates first.
@@ -95,8 +107,16 @@ def set_params(p: dict) -> None:
     """
     global params
     # Initialize params each time
-    params = {"start": None, "end": None, "poly": None, "region": None, "backend": "ohsome",
-              "keep-temp": False, "restrict-window": False, "save-wip": False}
+    params = {
+        "start": None,
+        "end": None,
+        "poly": None,
+        "region": None,
+        "backend": "ohsome",
+        "keep-temp": False,
+        "restrict-window": False,
+        "save-wip": False,
+    }
 
     if "start" in p:
         p["start"] = check_start_date(p["start"])
@@ -198,48 +218,22 @@ def check_boolean(name: str, arg: Any) -> bool | None:
     return arg
 
 
-def get_input(argv: list[str] | None = None) -> dict:
-    """Parse command-line arguments for site extraction."""
-    parser = argparse.ArgumentParser(
-        description="Extract OSM construction sites in a polygon over a date window."
-    )
-    parser.add_argument("-s", "--start", required=True, help="Start date YYYY-MM-DD (on or after 2015-06-22)")
-    parser.add_argument("-e", "--end", required=True, help="End date YYYY-MM-DD (at least 10 days before today)")
-    parser.add_argument("-p", "--poly", required=True, help="Path to an Osmosis .poly file")
-    parser.add_argument(
-        "-r",
-        "--region",
-        default=None,
-        help="Path to an OSM history .osh.pbf file (required for --backend osmium)",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=("ohsome", "osmium"),
-        default="ohsome",
-        help="ohsome API (default, no history dump) or original osmium daily snapshots",
-    )
-    parser.add_argument("--keep-temp", action="store_true", help="Keep daily osmium snapshots")
-    parser.add_argument(
-        "--restrict-window",
-        action="store_true",
-        help="Do not search before start / after end for true construction dates",
-    )
-    parser.add_argument("--save-wip", action="store_true", help="Also save in-progress sites")
-    args = parser.parse_args(argv)
-
-    start = check_start_date(args.start)
-    end = check_end_date(args.end, start)
-    poly = check_file_path(args.poly)
-    backend = args.backend
+def params_from_args(args) -> dict:
+    """Validate an argparse namespace (cssic extract or extract_sites.py) into a params dict."""
+    raw = namespace_to_dict(args, EXTRACT_FIELDS)
+    start = check_start_date(raw["start"])
+    end = check_end_date(raw["end"], start)
+    poly = check_file_path(raw["poly"])
+    backend = raw["backend"]
     region = None
     if backend == "osmium":
-        if not args.region:
+        if not raw["region"]:
             print("ERROR: --region is required with --backend osmium")
             sys.exit(2)
-        region = check_file_path(args.region)
-    elif args.region:
-        region = check_file_path(args.region)
-    for name, value in (("start", start), ("end", end), ("poly", poly)):
+        region = check_file_path(raw["region"])
+    elif raw["region"]:
+        region = check_file_path(raw["region"])
+    for value in (start, end, poly):
         if value is None:
             sys.exit(2)
     if backend == "osmium" and region is None:
@@ -251,21 +245,26 @@ def get_input(argv: list[str] | None = None) -> dict:
         "poly": poly,
         "region": region,
         "backend": backend,
-        "keep-temp": args.keep_temp,
-        "restrict-window": args.restrict_window,
-        "save-wip": args.save_wip,
+        "keep-temp": bool(raw["keep-temp"]),
+        "restrict-window": bool(raw["restrict-window"]),
+        "save-wip": bool(raw["save-wip"]),
     }
 
 
-def fill_start(uc):
+def get_input(argv: list[str] | None = None) -> dict:
+    """Parse command-line arguments for site extraction (python extract_sites.py)."""
+    return params_from_args(build_extract_parser().parse_args(argv))
+
+
+def fill_start(uc, cfg: dict):
     """
     A function which travels backwards in time to fill information and build the way chain map. No new construction
     sites are added to the map.
 
     :param uc: A way chain map that has under construction sites
+    :param cfg: Extract params (start date).
     :return: A way chain map with complete start and end dates.
     """
-    global params
     print("Finding all start dates")
     # get oldest construction site.
     # There are no chains yet after initialization
@@ -273,7 +272,7 @@ def fill_start(uc):
     # Single day decrement
     delta_single = timedelta(days=1)
     # Day before start date
-    current_date = params["start"] - delta_single
+    current_date = cfg["start"] - delta_single
     # We can finish when all start dates are found
     while len(ids_need_start) > 0 and current_date > date(year=2010, month=1, day=1):
         print(f"[Finding Start] {str(current_date)}")
@@ -296,8 +295,6 @@ def fill_start_helper(ids_need_start, uc, current_date):
     :param current_date: The date to search for changes
     :return: None
     """
-    global params
-
     # get all ids of ways from today
     construction_f_handler = _osm_handler()
     daily_filtered_path = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
@@ -335,22 +332,22 @@ def fill_start_helper(ids_need_start, uc, current_date):
         ids_need_start.append(k)
 
 
-def fill_end(uc, completed):
+def fill_end(uc, completed, cfg: dict):
     """A function which travels forward in time to fill information and build the way chain map. No new construction
     sites are added to the map.
 
     :param uc: A way chain map that has under construction sites.
     :param completed: A way chain map that has completed sites.
+    :param cfg: Extract params (end date).
     :return: 2 updated way chain maps containing under construction sites and completed sites
     """
-    global params
     print("Finding all end dates")
     # get last ids in chains
     ids_need_end = [int(k.split("-")[0].split("_")[-1]) for k in uc.map.keys()]
     # Single day decrement
     delta_single = timedelta(days=1)
     # Day before start date
-    current_date = params["end"] + delta_single
+    current_date = cfg["end"] + delta_single
     # We can finish when all start dates are found. Stop checking dates after today
     while len(ids_need_end) > 0 and current_date < date.today()-timedelta(days=7):
         print(f"[Finding End] {str(current_date)}")
@@ -372,7 +369,6 @@ def fill_end_helper(ids_need_end, uc, completed, current_date):
     :param current_date: The date to update changes in construction
     :return: A list of ways whose construction was completed on current_date
     """
-    global params
     # Filename of filtered construction of today
     daily_filtered_path = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     # get ways under construction for next day
@@ -541,7 +537,6 @@ def update_existing_sites(uc, completed, current_date):
     :param current_date: The date to check for construction changes
     :return: None
     """
-    global params
     # Get new only construction file for current date
     filtered_construction = str(snapshot_dir / f"filter_file_{str(current_date)}_only_construction.osm")
     candid_daily_snapshot = str(snapshot_dir / f"{str(current_date)}-candid.osm")
@@ -577,27 +572,30 @@ def _save_gdf(gdf, stem: str) -> None:
     gdf.to_file(shp)
 
 
-def locate_construction() -> tuple[Any, Any]:
-    """Dispatch to ohsome (default) or the original osmium daily-snapshot backend."""
-    global params
-    if params.get("backend", "ohsome") == "ohsome":
+def locate_construction(p: dict | None = None) -> tuple[Any, Any]:
+    """Dispatch to ohsome (default) or the original osmium daily-snapshot backend.
+
+    Pass a params dict from CLI / params_from_args. With no argument, uses the
+    module store set by set_params (notebook).
+    """
+    cfg = _extract_cfg(p)
+    if cfg.get("backend", "ohsome") == "ohsome":
         from extract_ohsome import locate_construction_ohsome
 
-        return locate_construction_ohsome(params)
+        return locate_construction_ohsome(cfg)
     require_osmium()
-    return locate_construction_osmium()
+    return locate_construction_osmium(cfg)
 
 
-def locate_construction_osmium() -> tuple[Any, Any]:
+def locate_construction_osmium(p: dict | None = None) -> tuple[Any, Any]:
     """Paper-faithful extract: daily osmium snapshots + WayChain ID rewiring.
 
     :return: In-progress and completed GeoDataFrames (or None).
     """
+    cfg = _extract_cfg(p)
     print("Extracting polygon of history file")
     setup_directory()
-    get_outputpoly()
-
-    global params
+    get_outputpoly(cfg)
 
     # Filter for ways that have been buildings under construction before
     run_osmium(
@@ -622,8 +620,8 @@ def locate_construction_osmium() -> tuple[Any, Any]:
 
     # iterate through each day and obtain snapshots
     delta = timedelta(days=1)
-    current_date = params["start"]
-    end_date = params["end"]
+    current_date = cfg["start"]
+    end_date = cfg["end"]
     print("Generating window snapshots")
     while current_date <= end_date:
         snapshot_path = str(snapshot_dir / f"{str(current_date)}-candid.osm")
@@ -638,14 +636,14 @@ def locate_construction_osmium() -> tuple[Any, Any]:
 
     # Initialize the under construction sites starting with the start date snapshot
     print("Initializing map")
-    uc = initialize_construction_map()
+    uc = initialize_construction_map(cfg)
 
     # create new way chain map for completed sites
     completed = way_chain.WayChainMap()
 
     # find changes between consecutive days
-    current_date = params["start"] + delta
-    end_date = params["end"]
+    current_date = cfg["start"] + delta
+    end_date = cfg["end"]
     print("Locating Construction")
     while current_date <= end_date:
         print(f"[Observing Construction Changes] {str(current_date)}")
@@ -653,17 +651,17 @@ def locate_construction_osmium() -> tuple[Any, Any]:
         add_new_sites(uc, current_date)
         current_date += delta
 
-    if not params["restrict-window"]:
-        fill_end(uc, completed)
+    if not cfg["restrict-window"]:
+        fill_end(uc, completed, cfg)
     print("Getting GeoDataFrames")
     uc_gdf = uc.get_gdf()
     completed_gdf = completed.get_gdf()
     print("Saving GeoDataFrames")
-    if uc_gdf is not None and params["save-wip"]:
+    if uc_gdf is not None and cfg["save-wip"]:
         _save_gdf(uc_gdf, "in_progress")
     if completed_gdf is not None:
         _save_gdf(completed_gdf, "collection")
-    if not params["keep-temp"]:
+    if not cfg["keep-temp"]:
         for filepath in temp_dir.glob("*"):
             if filepath.is_dir():
                 shutil.rmtree(str(filepath))
@@ -671,17 +669,17 @@ def locate_construction_osmium() -> tuple[Any, Any]:
     return uc_gdf, completed_gdf
 
 
-def initialize_construction_map():
+def initialize_construction_map(p: dict | None = None):
     """Initializes an under construction dictionary as of the start date of the search.
 
     :return: An initialized under construction WayChainMap
     """
-    global params
+    cfg = _extract_cfg(p)
     # WayChainMap of under construction way chains
     uc = way_chain.WayChainMap()
     # create snapshot of sites only under construction
-    construction_f = str(snapshot_dir / f"filter_file_{str(params['start'])}_only_construction.osm")
-    candid_start_snapshot = str(snapshot_dir / f"{str(params['start'])}-candid.osm")
+    construction_f = str(snapshot_dir / f"filter_file_{str(cfg['start'])}_only_construction.osm")
+    candid_start_snapshot = str(snapshot_dir / f"{str(cfg['start'])}-candid.osm")
     run_osmium("tags-filter", candid_start_snapshot, "w/*=construction", "-o", construction_f)
     # get construction sites as of start date
     construction_f_handler = _osm_handler()
@@ -693,28 +691,28 @@ def initialize_construction_map():
         # we know there cant be chains on initialization so this line is ok
         if k not in uc.get_map_ways():
             # add new way chain
-            new_chain = way_chain.WayChain(k, params['start'], params['start'], construction_f_handler.tags[k], "N/A",
+            new_chain = way_chain.WayChain(k, cfg['start'], cfg['start'], construction_f_handler.tags[k], "N/A",
                                            "N/A", construction_f_handler.geometry[k])
             # key is the new way_id + serial_no
             uc.map[str(k)+f"-{new_chain.serial_no}"] = new_chain
 
-    if not params["restrict-window"]:
-        return fill_start(uc)
+    if not cfg["restrict-window"]:
+        return fill_start(uc, cfg)
     else:
         return uc
 
 
-def get_outputpoly():
+def get_outputpoly(p: dict | None = None):
     """
     A function which will extract a polygon from a region (specified in params) and write to an output file.
     :return: None
     """
-    global params
+    cfg = _extract_cfg(p)
     run_osmium(
         "extract",
         "-p",
-        str(params["poly"]),
-        str(params["region"]),
+        str(cfg["poly"]),
+        str(cfg["region"]),
         "-o",
         "outputpoly.osh.pbf",
         "--with-history",
@@ -763,6 +761,5 @@ def generate_construction_snapshot(current_date):
 
 
 if __name__ == "__main__":
-    params = get_input()
-    wip_gdf, collection_gdf = locate_construction()
+    _, collection_gdf = locate_construction(get_input())
     create_dataset(collection_gdf)

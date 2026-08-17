@@ -57,7 +57,7 @@ You can override credentials on the gather command (`--api`, `--sh-client-id`, `
 
 ## CLI
 
-After install, the `cssic` entry point (`cssic = "cli:main"`) wraps the original modules:
+After install, the `cssic` entry point (`cssic = "cli:main"`) is the single argparse surface. `extract_sites` / `gather_images` take a params dict; they do not parse argv a second time.
 
 ```bash
 cssic setup
@@ -151,16 +151,16 @@ from workspace import setup_directory
 import extract_sites
 
 setup_directory()
-extract_sites.params = extract_sites.get_input([
-    "--start", "2018-04-15",
-    "--end", "2020-07-01",
-    "--poly", "poly/campus.poly",
-])
+extract_sites.set_params({
+    "start": "2018-04-15",
+    "end": "2020-07-01",
+    "poly": "poly/campus.poly",
+})
 _, collection_gdf = extract_sites.locate_construction()
 extract_sites.create_dataset(collection_gdf)
 ```
 
-Osmium / paper-faithful path: add `"--backend", "osmium", "--region", "ohio-internal.osh.pbf"` to `get_input`.
+Osmium / paper-faithful path: add `"backend": "osmium"` and `"region": "ohio-internal.osh.pbf"` to the dict. You can also pass that dict straight to `locate_construction(params)` without `set_params`. `python extract_sites.py` still accepts the same flags as `cssic extract`.
 
 ## Step 2: gather imagery
 
@@ -205,16 +205,29 @@ Python equivalent (keys stay in the environment):
 ```python
 import gather_images
 
-gather_images.parameters = gather_images.get_input(
-    ["--source", "p", "--rgb", "--nir", "--num-images", "3", "--verbose"]
-)
+gather_images.set_params({
+    "source": "p",
+    "rgb": True,
+    "nir": True,
+    "num-images": 3,
+    "verbose": True,
+})
 geodf = gather_images.setup()
 gather_images.gather_from_source(geodf)
 
 # After Planet orders succeed:
-gather_images.parameters["download-planet"] = True
+gather_images.set_params({
+    "source": "p",
+    "rgb": True,
+    "nir": True,
+    "num-images": 3,
+    "verbose": True,
+    "download-planet": True,
+})
 gather_images.gather_from_source(geodf)
 ```
+
+`python gather_images.py` still accepts the same flags as `cssic gather`.
 
 ## Output
 

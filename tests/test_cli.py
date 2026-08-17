@@ -129,15 +129,77 @@ def test_main_help_does_not_run_extract_or_gather():
     assert exc.value.code == 0
 
 
-def test_gather_argv_is_accepted_by_gather_images_get_input():
+def test_cli_does_not_rebuild_argv():
+    import cli
+
+    assert not hasattr(cli, "_extract_argv")
+    assert not hasattr(cli, "_gather_argv")
+
+
+def test_extract_script_help_lists_poly_and_region(capsys):
+    from parsers import build_extract_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_extract_parser().parse_args(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--poly" in help_text
+    assert "--region" in help_text
+    assert "--backend" in help_text
+    assert "--restrict-window" in help_text
+
+
+def test_gather_script_help_lists_env_backed_flags(capsys):
+    from parsers import build_gather_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_gather_parser().parse_args(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--api" in help_text
+    assert "--download" in help_text
+    assert "--sh-client-id" in help_text
+    assert "--sh-client-secret" in help_text
+    assert "--sentinel-provider" in help_text
+    assert "--rgb" in help_text
+    assert "--nir" in help_text
+    assert "stac" in help_text
+
+
+def test_extract_cli_namespace_becomes_params(tmp_path):
+    from extract_sites import params_from_args
+
+    poly = tmp_path / "region.poly"
+    poly.write_text("polygon")
+    args = build_parser().parse_args(
+        [
+            "extract",
+            "-s",
+            "2016-01-01",
+            "-e",
+            "2016-06-01",
+            "--poly",
+            str(poly),
+            "--keep-temp",
+            "--save-wip",
+        ]
+    )
+    params = params_from_args(args)
+    assert params["backend"] == "ohsome"
+    assert params["region"] is None
+    assert params["keep-temp"] is True
+    assert params["save-wip"] is True
+    assert params["poly"] == str(poly)
+
+
+def test_gather_cli_namespace_becomes_params():
     pytest.importorskip("geopandas")
     import gather_images
-    from cli import _gather_argv
 
     args = build_parser().parse_args(
         ["gather", "-s", "sentinel", "--rgb", "--nir", "-n", "3", "--sentinel-provider", "cdse"]
     )
-    params = gather_images.get_input(_gather_argv(args))
+    params = gather_images.params_from_args(args)
     assert params["source"] == "s"
     assert params["rgb"] is True
     assert params["nir"] is True
@@ -149,9 +211,8 @@ def test_gather_argv_is_accepted_by_gather_images_get_input():
 def test_gather_stac_source_is_accepted():
     pytest.importorskip("geopandas")
     import gather_images
-    from cli import _gather_argv
 
     args = build_parser().parse_args(["gather", "-s", "stac", "--rgb", "--nir", "-n", "3"])
-    params = gather_images.get_input(_gather_argv(args))
+    params = gather_images.params_from_args(args)
     assert params["source"] == "stac"
     assert params["rgb"] is True

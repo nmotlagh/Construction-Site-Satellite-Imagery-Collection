@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 from datetime import date
 
@@ -13,10 +12,11 @@ from shapely import affinity
 
 from credentials import planet_credentials, sentinel_credentials
 from dates import padding_scale, sample_date_windows
+from parsers import GATHER_FIELDS, build_gather_parser, namespace_to_dict
 from planet_helper import PlanetHandlerV2, reflectance_to_uint8
 from workspace import OUTPUT_DIR, collection_path, setup_directory
 
-parameters = {
+DEFAULT_PARAMETERS = {
     "rgb": False,
     "nir": False,
     "source": None,
@@ -30,6 +30,9 @@ parameters = {
     "sh-client-secret": None,
     "sentinel-provider": "cdse",
 }
+
+# Notebook / set_params store. CLI and typed callers pass a dict instead.
+parameters = dict(DEFAULT_PARAMETERS)
 
 output_dir = OUTPUT_DIR
 SENTINEL_CUTOFF = date(2015, 6, 23)
@@ -95,30 +98,21 @@ def check_padding(p):
         return None
 
 
-def set_params(params):
-    global parameters
-    parameters = {
-        "rgb": False,
-        "nir": False,
-        "source": None,
-        "num-images": 3,
-        "padding": 1.0,
-        "verbose": False,
-        "email": False,
-        "download-planet": False,
-        "api": None,
-        "sh-client-id": None,
-        "sh-client-secret": None,
-        "sentinel-provider": "cdse",
-    }
+def _gather_cfg(p: dict | None) -> dict:
+    return parameters if p is None else p
+
+
+def normalize_gather_params(raw: dict) -> dict:
+    """Validate a gather-params dict (hyphenated keys). Exits 2 on error."""
+    out = dict(DEFAULT_PARAMETERS)
     mapping = {
         "num-images": check_num_images,
         "padding": check_padding,
         "source": check_source,
     }
     for key, checker in mapping.items():
-        if key in params:
-            parameters[key] = checker(params[key])
+        if key in raw:
+            out[key] = checker(raw[key])
     for key in (
         "api",
         "verbose",
@@ -130,67 +124,31 @@ def set_params(params):
         "sh-client-secret",
         "sentinel-provider",
     ):
-        if key in params:
-            parameters[key] = params[key]
-    for key, value in parameters.items():
+        if key in raw and raw[key] is not None:
+            out[key] = raw[key]
+    for key, value in out.items():
         if value is None and key in {"source", "num-images", "padding"}:
             print(f"ERROR: Provide a correct value for {key}!")
             sys.exit(2)
-    if not parameters["rgb"] and not parameters["nir"]:
+    if not out["rgb"] and not out["nir"]:
         print("ERROR: Select at least one of --rgb / --nir")
         sys.exit(2)
+    return out
+
+
+def set_params(params):
+    global parameters
+    parameters = normalize_gather_params(params)
+
+
+def params_from_args(args) -> dict:
+    """Validate an argparse namespace (cssic gather or gather_images.py) into a params dict."""
+    return normalize_gather_params(namespace_to_dict(args, GATHER_FIELDS))
 
 
 def get_input(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Download Sentinel-2 or Planet imagery for extracted construction sites."
-    )
-    parser.add_argument("-s", "--source", required=True, help="'p'/'planet', 's'/'sentinel' (Process API), or 'stac'")
-    parser.add_argument("-n", "--num-images", default=3, help=">=3 samples, or -1 for every available date")
-    parser.add_argument("-p", "--padding", default=1, help="Area scale factor (1 = exact bounding box)")
-    parser.add_argument("-C", "--rgb", action="store_true", help="Download RGB")
-    parser.add_argument("-N", "--nir", action="store_true", help="Download NIR")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-e", "--email", action="store_true", help="Planet email notification when an order is ready")
-    parser.add_argument(
-        "--api",
-        "--api-key",
-        dest="api",
-        default=None,
-        help="Planet API key (or set PLANET_API_KEY). Ignored for Sentinel.",
-    )
-    parser.add_argument("--download", "--download-planet", dest="download_planet", action="store_true")
-    parser.add_argument("--sh-client-id", default=None, help="Sentinel Hub / CDSE OAuth client id")
-    parser.add_argument("--sh-client-secret", default=None, help="Sentinel Hub / CDSE OAuth client secret")
-    parser.add_argument(
-        "--sentinel-provider",
-        choices=("cdse", "sentinelhub"),
-        default=None,
-        help="cdse (default, free Copernicus Data Space) or commercial sentinelhub",
-    )
-    args = parser.parse_args(argv)
-    params = {
-        "rgb": args.rgb,
-        "nir": args.nir,
-        "source": check_source(args.source),
-        "num-images": check_num_images(args.num_images),
-        "padding": check_padding(args.padding),
-        "verbose": args.verbose,
-        "email": args.email,
-        "download-planet": args.download_planet,
-        "api": args.api,
-        "sh-client-id": args.sh_client_id,
-        "sh-client-secret": args.sh_client_secret,
-        "sentinel-provider": args.sentinel_provider or "cdse",
-    }
-    for key, value in params.items():
-        if value is None and key in {"source", "num-images", "padding"}:
-            print(f"ERROR: Provide a correct value for {key}!")
-            sys.exit(2)
-    if not params["rgb"] and not params["nir"]:
-        print("ERROR: Select at least one of --rgb / --nir")
-        sys.exit(2)
-    return params
+    """Parse command-line arguments for imagery gather (python gather_images.py)."""
+    return params_from_args(build_gather_parser().parse_args(argv))
 
 
 def _sentinel_config(creds):
@@ -321,7 +279,8 @@ class SentinelHandler:
             self.get_bands_sentinel(row)
 
 
-def setup(other_gdf=None):
+def setup(other_gdf=None, params=None):
+    cfg = _gather_cfg(params)
     setup_directory()
     gdf = other_gdf
     if gdf is None:
@@ -330,47 +289,47 @@ def setup(other_gdf=None):
             print("No construction sites found!")
             return None
         gdf = gpd.read_file(path)
-    source_name = "planet" if parameters["source"] == "p" else "sentinel"
+    source_name = "planet" if cfg["source"] == "p" else "sentinel"
     for _, row in gdf.iterrows():
         source_path = output_dir / f"{row['chain_id']}/images/{source_name}"
-        if parameters["rgb"]:
+        if cfg["rgb"]:
             (source_path / "rgb").mkdir(parents=True, exist_ok=True)
-        if parameters["nir"]:
+        if cfg["nir"]:
             (source_path / "nir").mkdir(parents=True, exist_ok=True)
     return gdf
 
 
-def gather_from_source(gdf):
-    global parameters
-    if parameters["source"] == "p":
-        creds = planet_credentials(parameters.get("api"))
-        if not creds.api_key and not parameters["download-planet"]:
+def gather_from_source(gdf, params=None):
+    cfg = _gather_cfg(params)
+    if cfg["source"] == "p":
+        creds = planet_credentials(cfg.get("api"))
+        if not creds.api_key and not cfg["download-planet"]:
             print(
                 "No Planet API key found. Set PLANET_API_KEY, pass --api, "
                 "or run `planet auth login`."
             )
-        handler = PlanetHandlerV2(creds.api_key, parameters, gdf)
-        if parameters["download-planet"]:
+        handler = PlanetHandlerV2(creds.api_key, cfg, gdf)
+        if cfg["download-planet"]:
             handler.download_orders()
         else:
             handler.bulk_order()
         return
-    if parameters["source"] == "stac":
+    if cfg["source"] == "stac":
         from sentinel_stac import SentinelSTACHandler
 
-        SentinelSTACHandler(parameters, gdf).get_all_imagery()
+        SentinelSTACHandler(cfg, gdf).get_all_imagery()
         return
     creds = sentinel_credentials(
-        parameters.get("sh-client-id"),
-        parameters.get("sh-client-secret"),
-        parameters.get("sentinel-provider"),
+        cfg.get("sh-client-id"),
+        cfg.get("sh-client-secret"),
+        cfg.get("sentinel-provider"),
     )
-    SentinelHandler(creds, parameters, gdf).get_all_imagery()
+    SentinelHandler(creds, cfg, gdf).get_all_imagery()
 
 
 if __name__ == "__main__":
-    parameters = get_input()
-    geodf = setup()
+    cfg = get_input()
+    geodf = setup(params=cfg)
     if geodf is None:
         sys.exit(2)
-    gather_from_source(geodf)
+    gather_from_source(geodf, cfg)

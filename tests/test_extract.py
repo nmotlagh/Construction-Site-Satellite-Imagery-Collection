@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from extract_sites import check_end_date, check_start_date, get_input, set_params
+from extract_sites import (
+    check_end_date,
+    check_start_date,
+    get_input,
+    locate_construction,
+    set_params,
+)
 
 
 def _touch_extract_files(tmp_path: Path) -> tuple[str, str]:
@@ -120,6 +126,77 @@ def test_get_input_save_wip_does_not_keyerror(tmp_path):
     without_flag = get_input(_valid_argv(tmp_path))
     assert without_flag["save-wip"] is False
     assert "wip-df" not in without_flag
+
+
+def test_extract_script_help_lists_flags(capsys):
+    with pytest.raises(SystemExit) as exc:
+        get_input(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--backend" in help_text
+    assert "--poly" in help_text
+    assert "--region" in help_text
+
+
+def test_locate_construction_accepts_params_dict(monkeypatch, tmp_path):
+    poly = tmp_path / "region.poly"
+    poly.write_text("polygon")
+    seen = {}
+
+    def fake_ohsome(p):
+        seen["p"] = p
+        return None, None
+
+    monkeypatch.setattr("extract_ohsome.locate_construction_ohsome", fake_ohsome)
+    cfg = {
+        "start": "2016-01-01",
+        "end": "2016-06-01",
+        "poly": str(poly),
+        "region": None,
+        "backend": "ohsome",
+        "keep-temp": False,
+        "restrict-window": False,
+        "save-wip": False,
+    }
+    locate_construction(cfg)
+    assert seen["p"] is cfg
+
+
+def test_locate_construction_uses_set_params_store(monkeypatch, tmp_path):
+    poly = tmp_path / "region.poly"
+    poly.write_text("polygon")
+    seen = {}
+
+    def fake_ohsome(p):
+        seen["backend"] = p.get("backend")
+        seen["poly"] = p.get("poly")
+        return None, None
+
+    monkeypatch.setattr("extract_ohsome.locate_construction_ohsome", fake_ohsome)
+    set_params(
+        {
+            "start": "2016-01-01",
+            "end": "2016-06-01",
+            "poly": str(poly),
+            "region": "",
+        }
+    )
+    locate_construction()
+    assert seen["backend"] == "ohsome"
+    assert seen["poly"] == str(poly)
+
+
+def test_locate_construction_osmium_backend_dispatches(monkeypatch):
+    seen = {}
+
+    def fake_osmium(p):
+        seen["p"] = p
+        return None, None
+
+    monkeypatch.setattr("extract_sites.require_osmium", lambda: None)
+    monkeypatch.setattr("extract_sites.locate_construction_osmium", fake_osmium)
+    locate_construction({"backend": "osmium", "region": "missing.osh.pbf"})
+    assert seen["p"]["backend"] == "osmium"
 
 
 def test_check_start_date_validation():

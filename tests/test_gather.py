@@ -14,6 +14,16 @@ from gather_images import (
 )
 
 
+def test_gather_script_help_lists_flags(capsys):
+    with pytest.raises(SystemExit) as exc:
+        get_input(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "stac" in help_text
+    assert "--api" in help_text
+    assert "--download" in help_text
+
+
 def test_get_input_requires_rgb_or_nir():
     with pytest.raises(SystemExit) as exc:
         get_input(["--source", "p", "--num-images", "3"])
@@ -144,6 +154,38 @@ def test_sentinel_credentials_env_loading(monkeypatch):
 
 def test_sentinel_handler_is_exported():
     assert SentinelHandler.__name__ == "SentinelHandler"
+
+
+def test_gather_from_source_uses_passed_params(monkeypatch):
+    seen = {}
+
+    class FakeSTAC:
+        def __init__(self, params, gdf):
+            seen["params"] = params
+            seen["gdf"] = gdf
+
+        def get_all_imagery(self):
+            seen["called"] = True
+
+    monkeypatch.setattr("sentinel_stac.SentinelSTACHandler", FakeSTAC)
+    cfg = {
+        "source": "stac",
+        "rgb": True,
+        "nir": False,
+        "num-images": 3,
+        "padding": 1.0,
+        "verbose": False,
+        "email": False,
+        "download-planet": False,
+        "api": None,
+        "sh-client-id": None,
+        "sh-client-secret": None,
+        "sentinel-provider": "cdse",
+    }
+    gather_images.gather_from_source("gdf-sentinel", cfg)
+    assert seen["called"] is True
+    assert seen["params"] is cfg
+    assert seen["gdf"] == "gdf-sentinel"
 
 
 def test_argparse_does_not_treat_api_as_store_true():
