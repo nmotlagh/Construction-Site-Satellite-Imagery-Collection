@@ -263,6 +263,7 @@ class PlanetSource:
         self.cfg = cfg if cfg is not None else GatherConfig(source="planet", rgb=True)
         self.item_type = item_type
         self._client = client
+        self._entitlement_checked = False
 
     # -- plumbing ---------------------------------------------------------
     @property
@@ -347,6 +348,47 @@ class PlanetSource:
         )
 
     # -- search -----------------------------------------------------------
+    def _explain_empty_search(self, aoi: Any, start: date, end: date) -> None:
+        """Once per run, tell an unentitled account why every search is empty.
+
+        A Planet account without a plan sees the archive but may download none
+        of it: the same search without ``permission_filter`` returns items
+        whose ``_permissions`` list is empty. From the outside that looks
+        exactly like "no imagery here", so the first empty site re-runs the
+        search unfiltered and names the real cause. Always printed, because a
+        run that orders nothing for that reason is not a quiet success.
+        """
+        if self._entitlement_checked:
+            return
+        self._entitlement_checked = True
+        from planet import data_filter
+        from planet.exceptions import APIError, ClientError
+        from shapely.geometry import mapping
+
+        unfiltered = data_filter.and_filter(
+            [
+                data_filter.geometry_filter(dict(mapping(aoi))),
+                data_filter.date_range_filter(
+                    "acquired",
+                    gte=as_acquired_datetime(start),
+                    lte=acquired_end_of_day(end),
+                ),
+            ]
+        )
+        try:
+            items = list(
+                self.client.data.search([self.item_type], search_filter=unfiltered, limit=1)
+            )
+        except (APIError, ClientError):
+            return
+        if items and not items[0].get("_permissions"):
+            print(
+                f"WARNING: Planet has {self.item_type} imagery over this site but your "
+                "account is not permitted to download any of it (no plan or quota on the "
+                "archive). Every site will order nothing until the account has "
+                "PlanetScope access: https://www.planet.com/account/"
+            )
+
     def search_filter(self, aoi: Any, start: date, end: date) -> dict[str, Any]:
         """The Data API ``and`` filter for one AOI and date window."""
         from planet import data_filter
@@ -402,6 +444,7 @@ class PlanetSource:
 
         if not item_ids:
             self._say(f"\tNo available PSScene items for {chain_id}; nothing ordered")
+            self._explain_empty_search(aoi, start, end)
             return []
 
         bundles = self.bundles

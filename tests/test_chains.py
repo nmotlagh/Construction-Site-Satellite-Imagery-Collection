@@ -608,6 +608,25 @@ def test_a_site_inside_the_bbox_but_outside_the_poly_is_not_collected(triangle_p
     assert only(completed).ids == ["1"]
 
 
+def test_chain_serials_do_not_depend_on_backend_ordering(poly_file):
+    """ohsome yields ids string-sorted, osmium numerically; live, the same 23
+    campus chains came back with different serials from the two backends.
+    The chain serial must follow one order regardless of who produced it."""
+    start, end = date(2018, 3, 1), date(2018, 3, 10)
+    spans = [
+        interval("way-1077541390", date(2018, 2, 10), date(2018, 3, 5)),
+        interval("way-693909168", date(2018, 2, 10), date(2018, 3, 5)),
+        interval("way-770472412", date(2018, 2, 10), date(2018, 3, 5)),
+    ]
+    ids = []
+    for order in (spans, list(reversed(spans)), sorted(spans, key=lambda i: i.osm_id)):
+        completed, _wip = build_chains(FakeHistory(intervals=order), config(poly_file, start, end))
+        ids.append([site.chain_id for site in completed.values()])
+
+    assert ids[0] == ids[1] == ids[2]
+    assert ids[0] == ["way-693909168-0", "way-770472412-1", "way-1077541390-2"]
+
+
 # --- boundary tags ----------------------------------------------------------
 
 

@@ -652,7 +652,18 @@ def clip_to_region(intervals: Iterable[Interval], region: Any) -> list[Interval]
         geometry = prepare_geom(interval.geometry)
         if geometry is None or region.intersects(geometry):
             kept.append(interval)
+    # Chain serials are handed out in this order, so fix it here rather than
+    # trusting each backend: ohsome sorts ids as strings, osmium numerically,
+    # and the two produced different serials for identical chains.
+    kept.sort(key=interval_order)
     return kept
+
+
+def interval_order(interval: Interval) -> tuple[str, int, str, date]:
+    """Sort key: element type, numeric id, then start date (``way-123`` style ids)."""
+    prefix, _, number = interval.osm_id.rpartition("-")
+    numeric = int(number) if number.isdigit() else -1
+    return (prefix, numeric, interval.osm_id, interval.valid_from)
 
 
 def build_chains(

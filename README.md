@@ -341,6 +341,11 @@ Notes the help text has no room for:
   once Planet reports them ready. An order whose delivery yields no usable chip
   stays in `temp/order_log.txt` (its staging directory kept) instead of being
   retired to `temp/order_log_complete.txt`.
+- A Planet account needs a plan (trial, paid, or the Education & Research
+  program) before it may download anything; a bare account sees the archive
+  but every search comes back empty under the permission filter. gather
+  detects that case and prints a `WARNING: ... not permitted to download`
+  line once, rather than silently ordering nothing.
 - Per chain, gather prints `<chain>: no acquisition between <a> and <b>` for
   every window that came back empty, and closes with `<chain>: wrote K of N
   requested samples`.

@@ -339,13 +339,45 @@ def test_create_order_builds_a_clipped_partial_order_with_both_bundles(tmp_path)
     assert order_log_path(ws) == tmp_path / "temp" / "order_log.txt"
 
 
-def test_create_order_without_scenes_creates_nothing(tmp_path):
+def test_create_order_without_scenes_creates_nothing(tmp_path, capsys):
     ws = Workspace(tmp_path)
     client = FakeClient([])
     source = make_source(client)
     assert source.create_order(make_gdf().iloc[0], ws) == []
     assert client.orders.requests == []
     assert read_order_log(ws) == []
+    assert "not permitted" not in capsys.readouterr().out
+
+
+def test_an_unentitled_account_is_told_why_every_search_is_empty(tmp_path, capsys):
+    """Live: a new account sees PSScene items with ``_permissions: []`` and the
+    permission filter hides all of them, which looked like "no imagery"."""
+    ws = Workspace(tmp_path)
+
+    class UnentitledData(FakeData):
+        def search(self, item_types, search_filter=None, sort=None, limit=None):
+            super().search(item_types, search_filter, sort, limit)
+            filtered = "permission" in str(search_filter).lower()
+            if filtered:
+                return iter([])
+            found = item("a", box(-1, -1, 1, 1), "2019-01-01T10:00:00Z")
+            found["_permissions"] = []
+            return iter([found])
+
+    client = FakeClient([])
+    client.data = UnentitledData()
+    source = make_source(client)
+    frame = make_gdf()
+
+    assert source.create_order(frame.iloc[0], ws) == []
+    assert source.create_order(frame.iloc[0], ws) == []
+
+    out = capsys.readouterr().out
+    assert out.count("not permitted to download") == 1
+    # Only the first empty site pays for the diagnostic search.
+    assert (
+        sum(1 for call in client.data.calls if "permission" not in str(call["filter"]).lower()) == 1
+    )
 
 
 def test_email_notifications_only_when_requested(tmp_path):

@@ -108,6 +108,17 @@ def run_osmium(*args: str) -> None:
         raise RuntimeError(f"{' '.join(cmd)} failed ({result.returncode}):\n{detail}")
 
 
+def public_id(element_type: str, raw_id: Any) -> str:
+    """``("way", 123)`` -> ``way-123``: the id form chains and the ohsome backend use.
+
+    Inside this module ways are keyed by their bare numeric id (that is what
+    pyosmium hands out); everything that leaves it -- intervals, snapshot
+    frames, hence chain ids and output directories -- carries the type prefix
+    so the two backends produce identical collections for the same history.
+    """
+    return f"{element_type}-{raw_id}"
+
+
 def descriptor_for(tags: dict[str, str]) -> str:
     """The most descriptive ``key=value`` for a polygon, or ``NO TAG FOUND``.
 
@@ -437,7 +448,7 @@ class OsmiumHistory:
             first_row = rows[min(rows)]
             intervals.append(
                 Interval(
-                    osm_id=record["way_id"],
+                    osm_id=public_id("way", record["way_id"]),
                     valid_from=record["valid_from"],
                     valid_to=record["valid_to"],
                     geometry=geometry,
@@ -519,7 +530,7 @@ class OsmiumHistory:
         frame = gpd.GeoDataFrame(
             [
                 {
-                    "osm_id": row["osm_id"],
+                    "osm_id": public_id(row["element_type"], row["osm_id"]),
                     "element_type": row["element_type"],
                     "tag_key": row["tag_key"],
                     "tag_value": row["tag_value"],

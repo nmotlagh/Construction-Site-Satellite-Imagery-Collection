@@ -135,7 +135,21 @@ def test_snapshot_extracts_then_time_filters(tmp_path, monkeypatch):
     poly.write_text("aoi\n1\n 0 0\n 1 0\n 1 1\n 0 0\nEND\nEND\n", encoding="utf-8")
 
     calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(osmium_backend, "_area_rows", lambda path: [])
+    monkeypatch.setattr(
+        osmium_backend,
+        "_area_rows",
+        lambda path: [
+            {
+                "osm_id": "7",
+                "element_type": "relation",
+                "tag_key": "landuse",
+                "tag_value": "residential",
+                "descriptor": "landuse=residential",
+                "tags": {"landuse": "residential"},
+                "geometry": None,
+            }
+        ],
+    )
     history = OsmiumHistory(
         region, poly, workspace=Workspace(tmp_path), runner=lambda *args: calls.append(args)
     )
@@ -152,6 +166,7 @@ def test_snapshot_extracts_then_time_filters(tmp_path, monkeypatch):
         "descriptor",
         "geometry",
     ]
+    assert list(frame["osm_id"]) == ["relation-7"]
     verbs = [call[0] for call in calls]
     assert verbs == ["extract", "tags-filter", "getid", "extract", "time-filter"]
     assert "2018-03-01T00:00:00Z" in calls[-1]
@@ -278,6 +293,9 @@ def test_an_unchanged_footprint_stays_one_version(tmp_path, monkeypatch):
     assert len(span.versions) == 1
     assert span.versions[0].valid_from == date(2018, 2, 10)
     assert span.versions[0].valid_to == date(2018, 3, 19)
+    # Same id form as the ohsome backend, so both produce identical chain ids
+    # (live: osmium wrote ``693909168-5`` where ohsome wrote ``way-693909168-5``).
+    assert span.osm_id == "way-1"
 
 
 def test_a_way_whose_footprint_misses_the_bbox_is_dropped(tmp_path, monkeypatch):
