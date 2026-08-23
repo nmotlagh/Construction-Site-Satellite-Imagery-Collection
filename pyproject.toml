@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "construction-site-satellite-imagery"
-version = "2.0.0"
+version = "3.0.0"
 description = "Extract OSM construction sites and download Sentinel-2 / Planet imagery over their lifetimes."
 readme = "README.md"
-license = { text = "GPL-3.0-only" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
   { name = "Nicholas Kashani Motlagh" },
@@ -25,26 +26,61 @@ keywords = [
   "construction",
   "satellite-imagery",
 ]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+# Core: enough for `import cssic`, the ohsome history backend, and the
+# collection/store layer. Heavy backend stacks live in the extras below and are
+# imported lazily by the backend that needs them.
 dependencies = [
   "geopandas>=1.0",
-  "matplotlib>=3.8",
   "shapely>=2.0",
+  "numpy>=1.24",
   "pillow>=10.0",
-  "sentinelhub>=3.11",
-  "planet>=3.0",
   "requests>=2.31",
-  "scikit-image>=0.22",
-  "osmium>=4.0",
   "python-dotenv>=1.0",
   "pyogrio>=0.9",
+]
+
+[project.optional-dependencies]
+#: `cssic extract --backend osmium` (also needs the osmium-tool binary on PATH).
+osmium = ["osmium>=4.0"]
+#: `cssic gather -s stac` (Planetary Computer Sentinel-2 L2A).
+stac = [
   "pystac-client>=0.8",
   "planetary-computer>=1.0",
   "rasterio>=1.3",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0"]
-notebook = ["jupyterlab>=4.0"]
+#: `cssic gather -s s` (CDSE / commercial Sentinel Hub Process API).
+sentinelhub = ["sentinelhub>=3.11"]
+#: `cssic gather -s p` (Planet PSScene + Orders API v2).
+planet = [
+  "planet>=3.0",
+  "rasterio>=1.3",
+]
+all = [
+  "construction-site-satellite-imagery[osmium,stac,sentinelhub,planet]",
+]
+dev = [
+  "construction-site-satellite-imagery[all]",
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+notebook = [
+  "construction-site-satellite-imagery[all]",
+  "jupyterlab>=4.0",
+  "matplotlib>=3.8",
+]
 
 [project.urls]
 Homepage = "https://github.com/nmotlagh/Construction-Site-Satellite-Imagery-Collection"
@@ -52,25 +88,25 @@ Upstream = "https://github.com/osu-cvl/Construction-Site-Satellite-Imagery-Colle
 Paper = "https://openaccess.thecvf.com/content/ICCV2021W/LUAI/papers/Motlagh_A_Framework_for_Semi-Automatic_Collection_of_Temporal_Satellite_Imagery_for_ICCVW_2021_paper.pdf"
 
 [project.scripts]
-cssic = "cli:main"
+cssic = "cssic.cli:main"
 
-[tool.setuptools]
-py-modules = [
-  "cli",
-  "credentials",
-  "dates",
-  "extract_ohsome",
-  "extract_sites",
-  "gather_images",
-  "osmhandler",
-  "planet_helper",
-  "polyfile",
-  "reset_extract",
-  "reset_images",
-  "sentinel_stac",
-  "way_chain",
-  "workspace",
-]
+[tool.setuptools.packages.find]
+include = ["cssic*"]
+# The wheel is `cssic` and nothing else. sdist contents (poly/, docs/, and the
+# tests that setuptools would otherwise half-ship) are pinned in MANIFEST.in,
+# which is the only mechanism setuptools offers for files outside the package.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import the package from the checkout, so `pytest` works without an install.
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# ruff formats Python blocks inside Markdown; docs/*.md carries hand-aligned
+# sketches of third-party APIs, not project source, so keep it out of scope.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "UP"]

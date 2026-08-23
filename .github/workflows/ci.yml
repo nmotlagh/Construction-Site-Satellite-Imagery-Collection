@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, modernize-v3]
+  pull_request:
+
+# Read-only: nothing here writes to the repository or publishes anything.
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Test
+        run: uv run pytest -q
+
+  # `import cssic` must work with none of the optional backends installed.
+  core-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install core only
+        run: uv sync --locked
+      - name: Import without any extra
+        run: |
+          uv run python - <<'PY'
+          import importlib.util
+          import cssic
+          from cssic.cli import build_parser
+          from cssic.history import get_history_source
+          from cssic.imagery import get_image_source
+          build_parser()
+          for name in ("osmium", "planet", "sentinelhub", "pystac_client", "rasterio"):
+              assert importlib.util.find_spec(name) is None, f"{name} should not be installed"
+          print("core import ok", cssic.__version__)
+          PY

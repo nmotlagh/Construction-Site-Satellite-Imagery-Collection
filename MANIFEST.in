@@ -1,0 +1,11 @@
+# What goes into the sdist beyond the package itself. Without this file
+# setuptools ships its defaults, which pick up tests/test_*.py (but not
+# conftest.py, so they cannot be run) and none of the files the README tells
+# people to use.
+include .env.example
+include poly/*.poly
+include docs/*.md
+
+# Tests need the checkout (conftest.py, fixtures, the pytest config in
+# pyproject.toml); a partial copy in the sdist is worse than none.
+prune tests

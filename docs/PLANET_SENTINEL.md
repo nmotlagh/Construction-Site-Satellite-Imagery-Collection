@@ -1,16 +1,27 @@
-# Planet / Sentinel / pyosmium / GeoPandas — 2026 API notes
+# Third-party API notes (Planet, Sentinel, STAC, pyosmium, GeoPandas)
 
-Verified against **installed packages** in `/tmp/cssic-research` on 2026-08-17:
+Reference notes on the **external** APIs `cssic` calls, recorded because several
+of them changed in ways that silently break 2020-era code. This is not project
+documentation — for that see [ARCHITECTURE.md](ARCHITECTURE.md) and the
+[README](../README.md). Each section ends with a pointer to the module that uses
+it.
+
+Verified against the versions pinned in `uv.lock`, on 2026-08-17:
 
 | Package | Version |
 | --- | --- |
-| `planet` | **3.6.0** (PyPI latest at research time) |
+| `planet` | **3.6.0** |
 | `sentinelhub` | **3.11.5** |
 | `osmium` (pyosmium) | **4.3.1** |
+| `pystac-client` | **0.9.0** |
+| `planetary-computer` | **1.0.0** |
+| `rasterio` | **1.5.1** on Python 3.12+, **1.4.4** on 3.10 / 3.11 |
 | `geopandas` | **1.1.4** |
 | `pyogrio` | **0.13.0** |
 
-Live Planet Orders bundle spec was fetched from `https://api.planet.com/compute/ops/bundles/spec` via the SDK’s lazy loader (no API key required for that GET).
+The Planet Orders bundle spec below was fetched live from
+`https://api.planet.com/compute/ops/bundles/spec` via the SDK’s lazy loader (no
+API key required for that GET).
 
 Do **not** put secrets in this file. Use env vars / `.env` (gitignored).
 
@@ -20,14 +31,14 @@ Do **not** put secrets in this file. Use env vars / `.env` (gitignored).
 
 There are two client layers:
 
-- **Sync (use this for the rewrite):** `planet.Planet` — methods return dicts / iterators. Internally they drive an `httpx.AsyncClient` on a background loop via `Session._call_sync`.
+- **Sync (what `cssic` uses):** `planet.Planet` — methods return dicts / iterators. Internally they drive an `httpx.AsyncClient` on a background loop via `Session._call_sync`.
 - **Async (do not mix into CLI code):** `async with planet.Session(...) as sess:` then `sess.client("data")` / `sess.client("orders")`, whose methods are `async` (`DataClient.search`, `OrdersClient.create_order`, …).
 
 `Planet().data.search` and `Planet().orders.create_order` are **synchronous**. They are **not** coroutines.
 
 ### 1.1 Exact sync constructor (legacy API key)
 
-This is the constructor the rewrite should use:
+This is the constructor `cssic.imagery.planet._planet_client` uses:
 
 ```python
 from planet import Auth, Planet, Session
@@ -70,7 +81,7 @@ client = Planet()  # Session() -> Auth.from_user_default_session()
 
 `Auth.from_env()` still exists but is **pending deprecation** in favor of `Auth.from_user_default_session()`.
 
-This repo’s `credentials.py` also accepts `PLANET_API_KEY` (project-specific, not an SDK var) and `PL_AUTH_API_KEY` (docstring-only). That is fine as a wrapper; the SDK itself only natively honors `PL_API_KEY` for legacy keys.
+`cssic.config.Credentials.from_env` also accepts `PLANET_API_KEY` (project-specific, not an SDK var) and `PL_AUTH_API_KEY` (docstring-only). That is fine as a wrapper; the SDK itself only natively honors `PL_API_KEY` for legacy keys.
 
 CLI equivalent:
 
@@ -226,7 +237,7 @@ Recommended for this project:
 # RGB
 order_request.product(ids, "visual", "PSScene")
 
-# NIR (4-band analytic + UDM2), prefer SR if the rewrite wants reflectance
+# NIR (4-band analytic + UDM2), with SR as the reflectance fallback
 order_request.product(
     ids, "analytic_udm2", "PSScene",
     fallback_bundle="analytic_sr_udm2",  # or reverse: SR first, TOAR fallback
@@ -235,7 +246,7 @@ order_request.product(
 
 `fallback_bundle` is concatenated into `product_bundle` as `"analytic_udm2,analytic_sr_udm2"`.
 
-Do **not** use `visual` with fallback `analytic_udm2` unless filename classification treats `AnalyticMS` as RGB. Those files are 4-band analytic, not visual RGB.
+`visual` with fallback `analytic_udm2` is only safe if the download step can turn `AnalyticMS` files into RGB — they are 4-band analytic, not visual RGB. `cssic.imagery.planet` uses that fallback and handles the case: `rewrite_tif` synthesises true colour from the analytic bands (`analytic_rgb`) when an RGB chip was requested and no visual file arrived for that date.
 
 ### 1.7 Typical downloaded filenames (PSScene, clip + reproject)
 
@@ -254,7 +265,7 @@ Orders tools append suffixes **in toolchain order**:
 - clip → `_clip` (skipped if the AOI does not actually clip the scene)
 - reproject → `_reproject`
 
-So with `tools=[clip_tool(...), reproject_tool(...)]`:
+`cssic` orders `tools=[clip_tool(...), reproject_tool(...)]` — clip first, then reproject, which is the usual toolchain (fewer pixels resampled):
 
 ```
 20230207_143613_03_241c_3B_Visual_clip_reproject.tif
@@ -262,17 +273,11 @@ So with `tools=[clip_tool(...), reproject_tool(...)]`:
 20230207_143613_03_241c_3B_udm2_clip_reproject.tif
 ```
 
-With reproject **then** clip (current `planet_helper.py` order):
-
-```
-..._3B_Visual_reproject_clip.tif
-..._3B_AnalyticMS_reproject_clip.tif
-..._3B_udm2_reproject_clip.tif
-```
-
-A `YYYYMMDD` regex on the filename still matches. Prefer classifying with `visual` / `analytic` / `udm` substrings (already the local approach). Downloads also include XML/JSON sidecar files — ignore non-TIFF.
-
-Clip first, then reproject, is the usual toolchain (fewer pixels resampled). Both orders are valid API.
+The reverse toolchain is equally valid API and just swaps the suffixes
+(`..._reproject_clip.tif`), so nothing downstream may depend on suffix order. A
+`YYYYMMDD` regex on the filename matches either way, and classification uses the
+`visual` / `analytic` / `udm` substrings (`classify_planet_file`). Downloads also
+include XML/JSON sidecar files — ignore non-TIFF.
 
 ---
 
@@ -434,9 +439,109 @@ CDSE free access is OAuth Process API + Catalog. **Do not** revive `SENTINEL_INS
 
 ---
 
-## 3. pyosmium 4 (`osmium` 4.3.1)
+## 3. Planetary Computer STAC (`pystac-client` 0.9, `planetary-computer` 1.0)
 
-### 3.1 `InvalidLocationError` import path
+The default imagery path (`cssic gather -s stac`). No account, no key: the
+Planetary Computer STAC API is open and asset hrefs are signed on the way out.
+
+### 3.1 Signing: use the client modifier, not a per-href call
+
+```python
+import planetary_computer
+from pystac_client import Client
+
+client = Client.open(
+    "https://planetarycomputer.microsoft.com/api/stac/v1",
+    modifier=planetary_computer.sign_inplace,
+)
+```
+
+`modifier=` signs every item the client hands back, so `item.assets[key].href`
+is already readable. Signatures expire (hours), so sign at read time — do not
+cache signed hrefs across a long run.
+
+### 3.2 Search
+
+```python
+search = client.search(
+    collections=["sentinel-2-l2a"],
+    intersects=mapping(aoi),                 # GeoJSON, EPSG:4326
+    datetime=f"{start.isoformat()}/{end.isoformat()}",
+    query={"eo:cloud_cover": {"lt": 40}},    # omit entirely to keep everything
+    sortby=[{"field": "properties.datetime", "direction": "asc"}],
+)
+for item in search.items():
+    ...
+```
+
+`intersects` also returns scenes that only clip a corner of a small AOI; the
+missing part reads back as nodata fill. Prefer an item whose footprint
+`covers()` the AOI and fall back to a partial one only when nothing covers it.
+
+### 3.3 Baseline 04.00 `BOA_ADD_OFFSET` — the silent one
+
+From ESA processing baseline 04.00 (25 January 2022), L2A digital numbers carry
+an offset: reflectance is `(DN + BOA_ADD_OFFSET) / 10000` with
+`BOA_ADD_OFFSET = -1000`. Code written before 2022 renders every later scene
+about 10% too bright.
+
+```python
+baseline = float(item.properties.get("s2:processing_baseline", 0))
+offset = -1000.0 if baseline >= 4.0 else 0.0
+```
+
+The offset applies to the **raw** bands (`B02`…`B08`). The pre-rendered
+`visual` asset is already 8-bit and already corrected — do not offset it again.
+
+### 3.4 Reading a window out of a remote COG
+
+Sentinel-2 COGs are in UTM; an AOI in EPSG:4326 must be reprojected into
+`dataset.crs` *before* windowing, or rasterio reports `Input shapes do not
+overlap raster`.
+
+```python
+import rasterio
+
+GDAL_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",   # one range request, not a listing
+    "GDAL_HTTP_MULTIRANGE": "YES",
+    "GDAL_HTTP_MERGE_CONSOLIDATED_RANGES": "YES",
+}
+with rasterio.Env(**GDAL_ENV), rasterio.open(signed_href) as src:
+    ...
+```
+
+Read a plain pixel **window**, not `rasterio.mask.mask(crop=True)`: masking
+rasterizes with centre-in-polygon semantics and fills the outer ring of the
+crop with nodata, which on chips this small is most of the image.
+
+### 3.5 `SCL`: the only cloud number that is about your site
+
+Every `sentinel-2-l2a` item publishes an `SCL` asset — the L2A Scene
+Classification Layer, 20 m, one band. Windowing it costs one extra small range
+request and answers what `eo:cloud_cover` cannot: how much of *this* AOI is
+obscured, rather than how much of a 110 km tile is. Unusable classes:
+
+| Value | Class |
+| --- | --- |
+| 3 | cloud shadow |
+| 8 | cloud, medium probability |
+| 9 | cloud, high probability |
+| 10 | thin cirrus |
+| 11 | snow / ice |
+
+`cssic.imagery.stac` picks a window's acquisition on that fraction (class 0,
+no data, is excluded from the denominator), after collapsing reprocessed
+duplicates of one overpass and ranking at most the five acquisitions that
+`eo:cloud_cover` already likes best.
+
+Used by `cssic.imagery.stac` and `cssic.imagery.chips`.
+
+---
+
+## 4. pyosmium 4 (`osmium` 4.3.1)
+
+### 4.1 `InvalidLocationError` import path
 
 Public export (this is the one to use):
 
@@ -447,7 +552,7 @@ from osmium import InvalidLocationError
 
 Still importable as `from osmium._osmium import InvalidLocationError`. The pyosmium 3 path `osmium._osmium` remains, but the top-level import is stable in 4.3.1.
 
-### 3.2 `Area.from_way()`, `orig_id()`, `WKBFactory.create_multipolygon`
+### 4.2 `Area.from_way()`, `orig_id()`, `WKBFactory.create_multipolygon`
 
 All still valid on `osmium.osm.Area` / `osmium.geom.WKBFactory`:
 
@@ -477,11 +582,15 @@ class Handler(osmium.SimpleHandler):
 
 `SimpleHandler.apply_file`: if an `area` callback exists, pyosmium scans the file twice and installs a location handler + area assembler. That is unchanged.
 
+Used by `cssic.history.osmium`, which also shells out to the separate
+**osmium-tool** binary (`osmium extract` / `osmium time-filter`); the Python
+wheel does not provide those commands.
+
 ---
 
-## 4. GeoPandas 1.x (`geopandas` 1.1.4)
+## 5. GeoPandas 1.x (`geopandas` 1.1.4)
 
-### 4.1 Recommended drivers: GPKG + GeoJSON vs Shapefile
+### 5.1 Recommended drivers: GPKG + GeoJSON vs Shapefile
 
 With `pyogrio` installed, the default engine is **pyogrio**.
 
@@ -491,9 +600,9 @@ With `pyogrio` installed, the default engine is **pyogrio**.
 | **GeoJSON** (`driver="GeoJSON"`) | Interchange / git-friendly. |
 | **ESRI Shapefile** | Compatibility only. Truncates column names to 10 chars (`chain_id`, `constr_tag`, `final_tag` are OK; longer names are not), weak datetime, sidecar files (`.shx/.dbf/.prj`). |
 
-Do not rely on Shapefile as the only collection format. `workspace.collection_path()` already prefers `collection.gpkg`, then `.geojson`, then `.shp`.
+Do not rely on Shapefile as the only collection format. `cssic.store.Workspace.collection_path()` prefers `collection.gpkg`, then `.geojson`, then `.shp`, and `save_collection()` writes all three.
 
-### 4.2 `to_file` API
+### 5.2 `to_file` API
 
 ```python
 gdf.to_file(
@@ -520,55 +629,48 @@ Avoid the old-only style `to_file(driver="ESRI Shapefile", filename=...)` for ne
 
 ---
 
-## 5. Mismatches vs current local rewrite
+## 6. Where `cssic` uses each of these
 
-Read of `planet_helper.py` and `gather_images.py` (already aimed at v3). What is **wrong or stale** relative to the installed 2026 APIs:
+| Note | Module |
+| --- | --- |
+| §1 Planet SDK v3 — sync client, filters, bundles, order tools, filenames | `cssic/imagery/planet.py` |
+| §2 Sentinel Hub / CDSE Process API + Catalog | `cssic/imagery/sentinelhub.py` |
+| §3 Planetary Computer STAC, `BOA_ADD_OFFSET`, COG windowing | `cssic/imagery/stac.py`, `cssic/imagery/chips.py` |
+| §4 pyosmium 4 areas and geometry | `cssic/history/osmium.py` |
+| §5 GeoPandas 1.x `to_file` drivers | `cssic/store.py` |
+| Env vars / `.env` | `cssic/config.py` (`Credentials.from_env`) |
 
-### Must-fix (`planet_helper.py`)
+Choices worth remembering, all of them still valid against the versions above:
 
-1. **`date_range_filter` is given ISO strings.** `get_filter` passes `_iso(left)` / `_iso(right)` (`"2017-02-19"`). In planet 3.6.0 that calls `value.isoformat()` then `value.utcoffset()` and **raises `AttributeError`**. `datetime.date` also fails (`no attribute 'utcoffset'`). Convert to `datetime` (timezone-aware preferred):
-
-   ```python
-   datetime.fromisoformat(left_date).replace(tzinfo=timezone.utc)
-   ```
-
-2. **`visual` fallback `analytic_udm2` + `classify_planet_file`.** If visual is unavailable, Orders delivers `*AnalyticMS*` TIFFs. Classification treats `"analytic" in name` as `"nir"`, so RGB fallback lands in the NIR folder. Either drop that fallback or classify 3-band/visual-intent analytic RGB separately.
-
-### Valid, keep (Planet)
-
-- `Planet(Session(Auth.from_key(api_key)))` / `Planet()` — correct sync constructors (prefer `auth=` keyword).
-- `ITEM_TYPE = "PSScene"` — correct; OrthoTile / 4Band are gone.
-- `data.search(..., sort="acquired asc", limit=0|250)` — `acquired asc` is in `SEARCH_SORT`; `limit=0` means unbounded.
-- `geometry_filter` / `permission_filter` / `and_filter` usage matches 3.6.0.
-- `order_request.product` / `clip_tool` / `reproject_tool` / `notifications(email=True)` / `build_request(..., order_type="partial")` match.
-- Bundles `visual` and `analytic_udm2` are valid; `analytic_sr_udm2` is a valid fallback.
-- `orders.get_order` / `download_order(order_id, directory=Path, overwrite=True)` match. `directory` is `pathlib.Path` and must exist (local `mkdir` is correct). Not using `orders.wait` is OK as long as download is skipped until `success`/`partial`.
-- NIR band picking (`index 7` if ≥8 bands else index 3) matches 8-band vs 4-band analytic.
-
-### Soft / hygiene (Planet)
-
-- Toolchain is reproject **then** clip. Clip-then-reproject is cheaper and matches Planet examples; filenames swap suffix order (`_reproject_clip` vs `_clip_reproject`).
-- Fallback SR vs TOAR is inverted vs usual “prefer SR” advice; both bundles are legal.
-- `Session` is never closed; acceptable for a short CLI process (background loop thread is daemon).
-
-### Sentinel (`gather_images.py`) — aligned
-
-- CDSE dashboard URL, `sh_client_id` / `sh_client_secret` / `sh_base_url` / `sh_token_url` are exact.
-- `SENTINEL2_L2A.define_from("s2l2a_cdse", service_url=CDSE_BASE)` is the documented CDSE pattern.
-- `SentinelHubRequest` + evalscripts for B02/B03/B04 and B08, `bbox_to_dimensions(bbox, resolution=10)`, `get_data()` are current Process API.
-- `other_args={"dataFilter": {"maxCloudCoverage": 100, "mosaickingOrder": "leastCC"}}` is valid raw JSON (0–100). Equivalent first-class form: `mosaicking_order=MosaickingOrder.LEAST_CC`, `maxcc=1.0` (0–1).
-- `SentinelHubCatalog(config=...).search(collection, bbox=bbox, time=(start, end))` matches 3.11.5.
-- OGC `WcsRequest` / `instance_id` correctly unused.
-
-### pyosmium / GeoPandas (not in the two imagery files, but verified)
-
-- `osmhandler.py` `from osmium import InvalidLocationError` (with `_osmium` fallback) is correct for 4.3.1.
-- `Area.from_way()`, `orig_id()`, `WKBFactory.create_multipolygon` remain valid.
-- `extract_sites._save_gdf` writing GPKG + GeoJSON + Shapefile matches GeoPandas 1.x guidance. `osmhandler.generate_single_shape_file` is still Shapefile-only (`to_file(driver=..., filename=...)`); that API still works but GPKG/GeoJSON should stay the collection source of truth.
+- `ITEM_TYPE = "PSScene"`. `PSOrthoTile` and `PSScene4Band` raise
+  `SpecificationException`; OrthoTile / 4Band are gone.
+- `data.search(..., sort="acquired asc", limit=0)` — `limit=0` means unbounded,
+  not "no results". `cssic` passes `0` only for `-n -1`.
+- Planet date filters are built from `datetime` objects, never ISO strings or
+  `datetime.date`: both crash inside `_datetime_to_rfc3339` in 3.6.0.
+- `order_type="partial"` delivers whatever items have a complete bundle instead
+  of failing the whole order.
+- `orders.wait()` is not used: `cssic gather -s p` places orders, logs them to
+  `temp/order_log.txt`, and a later `--download` run collects whatever has
+  reached `success` / `partial`. `download_order` refuses non-final states.
+  "Delivered" is not "collected": an order whose delivery yields no usable chip
+  (unreadable GeoTIFF, nothing but UDM masks, pure cloud) stays in
+  `temp/order_log.txt` with its staging directory, instead of being retired to
+  `temp/order_log_complete.txt`.
+- The `Session` is never explicitly closed; acceptable for a short CLI process
+  (the background loop thread is a daemon).
+- Sentinel Hub OGC (`WcsRequest` / `WmsRequest` / `instance_id`) is deliberately
+  unused — see §2.6.
+- The collection is written as GPKG **and** GeoJSON **and** Shapefile, with GPKG
+  as the source of truth; Shapefile is a compatibility copy only (§5.1).
 
 ---
 
-## 6. Copy-paste: minimal Planet sync order
+## 7. Copy-paste: minimal Planet sync order
+
+A standalone sketch, kept because it is the shortest correct end-to-end use of
+the SDK. `cssic` splits the same steps across `create_order` / `bulk_order` and
+a later `download_orders`, and so does not block on `orders.wait`.
 
 ```python
 from datetime import datetime, timezone
