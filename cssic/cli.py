@@ -3,8 +3,11 @@
 Argument parsing and dispatch only: the commands themselves live in
 :mod:`cssic.extract` and :mod:`cssic.gather`. Flags stay compatible with the
 v2 README. The one deliberate change is ``-n``, which now accepts any
-``n >= 1`` or ``-1`` (the v2 ``>= 3`` rule is gone). Every user-facing failure
-is one ``ERROR: ...`` line and exit code 2.
+``n >= 1`` or ``-1`` (the v2 ``>= 3`` rule is gone). The commands raise
+:class:`ValueError` for user errors -- bad flags, unreadable inputs, missing
+optional backends, rejected credentials -- and ``main`` turns each into one
+``ERROR: ...`` line and exit code 2. (An extraction that finds nothing also
+exits 2, with a plain explanation rather than an ``ERROR:`` line.)
 """
 
 from __future__ import annotations
@@ -205,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if args.command == "gather":
+        # run_gather shares the try like run_extract: an unreadable collection,
+        # a missing backend, or rejected credentials are user errors too.
         try:
             cfg = gather_config(args)
             credentials = Credentials.from_env(
@@ -213,10 +218,10 @@ def main(argv: list[str] | None = None) -> int:
                 sh_client_secret=args.sh_client_secret,
                 sentinel_provider=args.sentinel_provider,
             )
+            return run_gather(cfg, credentials, ws)
         except ValueError as exc:
             print(f"ERROR: {exc}")
             return 2
-        return run_gather(cfg, credentials, ws)
 
     parser.error(f"unknown command {args.command}")
     return 2

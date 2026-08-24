@@ -7,10 +7,7 @@ import pytest
 import cssic.deps as deps_module
 
 
-def test_require_backend_names_the_module_and_the_extra(monkeypatch):
-    monkeypatch.setattr(
-        deps_module, "BACKEND_REQUIREMENTS", {"stac": ("stac", ("no_such_module_xyz",))}
-    )
+def test_require_backend_names_the_module_and_the_extra(missing_stac_backend):
     with pytest.raises(ValueError) as exc:
         deps_module.require_backend("stac")
 
@@ -33,11 +30,8 @@ def test_the_real_backend_requirements_name_real_extras():
     assert extras == {"stac", "sentinelhub", "planet"}
 
 
-def test_the_install_hint_names_a_command_that_can_actually_run(monkeypatch):
+def test_the_install_hint_names_a_command_that_can_actually_run(missing_stac_backend):
     """The distribution is not on PyPI, so ``pip install 'cssic[stac]'`` is a dead end."""
-    monkeypatch.setattr(
-        deps_module, "BACKEND_REQUIREMENTS", {"stac": ("stac", ("no_such_module_xyz",))}
-    )
     with pytest.raises(ValueError) as exc:
         deps_module.require_backend("stac")
 

@@ -17,7 +17,7 @@ def test_gather_with_no_collection_exits_two(tmp_path, monkeypatch, capsys):
     assert "No construction sites found" in capsys.readouterr().out
 
 
-def test_gather_planet_reports_bad_credentials_without_a_traceback(monkeypatch, capsys):
+def test_gather_planet_reports_bad_credentials_without_a_traceback(monkeypatch):
     """A rejected Planet key is a user error, not a crash: ``ERROR: ...`` and exit 2."""
     pytest.importorskip("planet")
     from planet.exceptions import InvalidAPIKey
@@ -90,14 +90,12 @@ def gather_with(monkeypatch, tmp_path, source, argv=("gather", "-s", "stac", "--
 
 
 def test_gather_reports_a_missing_backend_instead_of_an_import_traceback(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, missing_stac_backend
 ):
-    monkeypatch.setattr(
-        deps_module, "BACKEND_REQUIREMENTS", {"stac": ("stac", ("no_such_module_xyz",))}
-    )
-    cfg = gather_config(build_parser().parse_args(["gather", "-s", "stac", "--rgb"]))
+    collection(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-    assert run_gather(cfg, Credentials(), collection(tmp_path)) == 2
+    assert main(["gather", "-s", "stac", "--rgb"]) == 2
     out = capsys.readouterr().out
     assert "ERROR" in out
     assert "no_such_module_xyz" in out
@@ -288,7 +286,7 @@ def test_gather_pads_the_aoi_by_the_requested_area_factor(tmp_path, monkeypatch)
 # --- Sentinel Hub credentials are checked once, not once per site -----------
 
 
-def test_bad_sentinel_hub_credentials_are_one_error_line(monkeypatch, capsys):
+def test_bad_sentinel_hub_credentials_are_one_error_line(monkeypatch):
     """An oauthlib traceback after 25 SEARCH FAILED lines is not a user error message."""
     pytest.importorskip("sentinelhub")
     import sentinelhub
@@ -317,7 +315,9 @@ def test_a_transport_failure_is_not_relabelled_as_bad_credentials(monkeypatch):
         gather_module._check_sentinel_credentials(type("S", (), {"config": object()})())
 
 
-def test_gather_exits_two_when_sentinel_hub_rejects_the_keys(tmp_path, monkeypatch, capsys):
+def test_gather_exits_two_when_sentinel_hub_rejects_the_keys(
+    tmp_path, monkeypatch, capsys, no_backend_check
+):
     pytest.importorskip("sentinelhub")
     import sentinelhub
     from oauthlib.oauth2.rfc6749.errors import InvalidClientError
@@ -328,13 +328,13 @@ def test_gather_exits_two_when_sentinel_hub_rejects_the_keys(tmp_path, monkeypat
         raise InvalidClientError(description="Invalid client credentials")
 
     monkeypatch.setattr(sentinelhub, "SentinelHubSession", reject)
-    monkeypatch.setattr(deps_module, "BACKEND_REQUIREMENTS", {})
     monkeypatch.setattr(
         imagery, "get_image_source", lambda *a, **kw: type("S", (), {"config": object()})()
     )
-    cfg = gather_config(build_parser().parse_args(["gather", "-s", "s", "--rgb"]))
+    collection(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-    assert run_gather(cfg, Credentials(), collection(tmp_path)) == 2
+    assert main(["gather", "-s", "s", "--rgb"]) == 2
     out = capsys.readouterr().out
     assert out.count("ERROR:") == 1
     assert "SEARCH FAILED" not in out

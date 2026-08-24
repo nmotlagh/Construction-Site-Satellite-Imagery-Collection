@@ -191,29 +191,22 @@ def run_gather(
     try:
         gdf = ws.load_collection()
     except (RuntimeError, ValueError, OSError) as exc:
-        print(f"ERROR: cannot read {ws.collection_path()}: {exc}")
-        return 2
+        raise ValueError(f"cannot read {ws.collection_path()}: {exc}") from exc
     if gdf is None:
         print("No construction sites found! Run `cssic extract` first.")
         return 2
     ws.prepare_image_dirs(gdf, cfg.source_dir, cfg.bands)
 
-    try:
-        require_backend(cfg.source)
-        if cfg.source == "planet":
-            return _run_planet(cfg, credentials, ws, gdf)
-        if cfg.source == "stac":
-            source = get_image_source(
-                "stac", max_cloud_cover=cfg.max_cloud_cover, verbose=cfg.verbose
-            )
-        else:
-            source = get_image_source(
-                "sentinel", credentials=credentials, max_cloud_cover=cfg.max_cloud_cover
-            )
-            _check_sentinel_credentials(source)
-    except ValueError as exc:
-        print(f"ERROR: {exc}")
-        return 2
+    require_backend(cfg.source)
+    if cfg.source == "planet":
+        return _run_planet(cfg, credentials, ws, gdf)
+    if cfg.source == "stac":
+        source = get_image_source("stac", max_cloud_cover=cfg.max_cloud_cover, verbose=cfg.verbose)
+    else:
+        source = get_image_source(
+            "sentinel", credentials=credentials, max_cloud_cover=cfg.max_cloud_cover
+        )
+        _check_sentinel_credentials(source)
 
     all_dates = cfg.num_images == -1
     written = 0
