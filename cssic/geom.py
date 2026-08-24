@@ -12,14 +12,17 @@ from __future__ import annotations
 
 from typing import Any
 
-_GEOM_ERRORS: tuple[type[BaseException], ...] = (ValueError, TypeError, AttributeError)
-
 
 def _geom_errors() -> tuple[type[BaseException], ...]:
-    """The failures a degenerate geometry can raise, including shapely's own."""
+    """The failures a degenerate geometry can raise under shapely>=2.
+
+    Deliberately narrow: a TypeError or AttributeError here is a programming
+    error (a non-geometry handed in, a typo in these helpers), and swallowing
+    it would silently turn every IOU into 0.0 and every boundary tag into N/A.
+    """
     from shapely.errors import GEOSException
 
-    return _GEOM_ERRORS + (GEOSException,)
+    return (ValueError, GEOSException)
 
 
 def prepare_geom(geom: Any) -> Any | None:
@@ -71,11 +74,11 @@ def intersection_over_union(left: Any, right: Any) -> float:
             return 0.0
         inter_area = left.intersection(right).area
         union_geom = union_all([left, right])
-        union_area = 0.0 if union_geom is None or union_geom.is_empty else union_geom.area
+        union_area = 0.0 if union_geom.is_empty else union_geom.area
         if union_area <= 0.0:
             return 0.0
         return inter_area / union_area
-    except _geom_errors() + (ZeroDivisionError,):
+    except _geom_errors():
         return 0.0
 
 
