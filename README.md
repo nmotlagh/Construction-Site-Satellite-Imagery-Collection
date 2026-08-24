@@ -509,7 +509,7 @@ Imagery:
 
 ```python
 from cssic import Credentials, GatherConfig, Workspace
-from cssic.cli import run_gather
+from cssic.gather import run_gather
 
 ws = Workspace()
 run_gather(

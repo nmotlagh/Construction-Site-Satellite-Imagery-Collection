@@ -119,15 +119,26 @@ cssic/
                      temp/ for snapshots and order logs. reset_extract() /
                      reset_images() return how many files they removed, so the
                      CLI can report it.
-  cli.py             argparse: cssic setup|extract|gather|reset-extract|reset-images.
-                     Flags stay compatible with the v2 README. `-n` accepts any
-                     n >= 1 or -1 (the >=3 rule is gone; 1 and 2 are valid samples);
-                     `--day-padding` exposes the v2 six-day search widening;
-                     extract takes `-v` / `-q` and owns all progress output.
-                     A backend's optional imports are checked up front
-                     (require_backend) so a missing extra is an install hint,
-                     not an ImportError traceback from inside a fetch. Every
-                     user-facing failure is one `ERROR: ...` line and exit 2.
+  deps.py            Optional-dependency preflight: require_backend() /
+                     require_history_backend() check a backend's lazy imports up
+                     front, so a missing extra is an install hint, not an
+                     ImportError traceback from inside a fetch.
+  extract.py         run_extract(): the `cssic extract` command. Picks the
+                     history backend, runs build_chains, owns the run's progress
+                     output (`-v` / `-q`), writes results through Workspace.
+  gather.py          run_gather(): the `cssic gather` command. Loads the saved
+                     collection, samples one scene per date window (with a
+                     fallback sampler for backends without sample_scenes),
+                     fetches bands, drops blank chips; per-site failures never
+                     lose the sites after them. Planet's order/download flow and
+                     the up-front Sentinel Hub credential check live here too.
+  cli.py             argparse only: cssic setup|extract|gather|reset-extract|
+                     reset-images, config building, dispatch to extract.py /
+                     gather.py. Flags stay compatible with the v2 README. `-n`
+                     accepts any n >= 1 or -1 (the >=3 rule is gone; 1 and 2 are
+                     valid samples); `--day-padding` exposes the v2 six-day
+                     search widening. Every user-facing failure is one
+                     `ERROR: ...` line and exit 2.
 tests/               pytest, no network. Synthetic HistorySource fixtures for
                      chains.py; a real in-memory rasterio GeoTIFF in UTM for
                      chips.py so the CRS path is exercised.
