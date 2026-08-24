@@ -18,98 +18,10 @@ from __future__ import annotations
 
 from typing import Any
 
-_GEOM_ERRORS: tuple[type[BaseException], ...] = (ValueError, TypeError, AttributeError)
+from cssic.geom import bounds_box, prepare_geom, safe_union
 
 #: Column order of the collection GeoDataFrame / ``collection.gpkg``.
 GDF_COLUMNS = ("chain_id", "start", "end", "constr_tag", "prev_tag", "final_tag")
-
-
-def _geom_errors() -> tuple[type[BaseException], ...]:
-    """Return shapely topology errors plus built-in failures, if shapely is present."""
-    try:
-        from shapely.errors import GEOSException
-    except ImportError:
-        return _GEOM_ERRORS
-    return _GEOM_ERRORS + (GEOSException,)
-
-
-def prepare_geom(geom: Any) -> Any | None:
-    """Return a valid, non-empty geometry, or None if it cannot be used."""
-    if geom is None:
-        return None
-    try:
-        from shapely import make_valid
-    except ImportError:
-        try:
-            from shapely.validation import make_valid
-        except ImportError:
-            make_valid = None
-    try:
-        if geom.is_empty:
-            return None
-        if make_valid is not None and not geom.is_valid:
-            geom = make_valid(geom)
-        if geom is None or geom.is_empty:
-            return None
-        return geom
-    except _geom_errors():
-        return None
-
-
-def safe_union(left: Any, right: Any) -> Any | None:
-    """Union two geometries, skipping empty/invalid inputs (shapely 2-safe)."""
-    left = prepare_geom(left)
-    right = prepare_geom(right)
-    if left is None:
-        return right
-    if right is None:
-        return left
-    try:
-        try:
-            from shapely import union_all
-        except ImportError:
-            from shapely.ops import unary_union as union_all
-        merged = union_all([left, right])
-        prepared = prepare_geom(merged)
-        return prepared if prepared is not None else left
-    except _geom_errors():
-        return left
-
-
-def intersection_over_union(left: Any, right: Any) -> float:
-    """IOU confidence of two geometries; 0.0 when union area is 0 or GEOS fails."""
-    left = prepare_geom(left)
-    right = prepare_geom(right)
-    if left is None or right is None:
-        return 0.0
-    try:
-        try:
-            from shapely import union_all
-        except ImportError:
-            from shapely.ops import unary_union as union_all
-        if not left.intersects(right):
-            return 0.0
-        inter_area = left.intersection(right).area
-        union_geom = union_all([left, right])
-        union_area = 0.0 if union_geom is None or union_geom.is_empty else union_geom.area
-        if union_area <= 0.0:
-            return 0.0
-        return inter_area / union_area
-    except _geom_errors() + (ZeroDivisionError,):
-        return 0.0
-
-
-def bounds_box(geom: Any) -> Any:
-    """Return the geometry's bounding box as a polygon (empty polygon if unusable)."""
-    from shapely.geometry import Polygon, box
-
-    prepared = prepare_geom(geom)
-    if prepared is None:
-        return Polygon()
-    minx, miny, maxx, maxy = prepared.bounds
-    if any(v != v for v in (minx, miny, maxx, maxy)):  # NaN check
-        return Polygon()
-    return box(minx, miny, maxx, maxy)
 
 
 class Site:

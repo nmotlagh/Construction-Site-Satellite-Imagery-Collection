@@ -34,8 +34,9 @@ from datetime import date, timedelta
 from typing import Any
 
 from cssic.config import NO_TAG, ExtractConfig
+from cssic.geom import intersection_over_union, prepare_geom
 from cssic.history.base import BBox, HistorySource, Interval, data_until
-from cssic.sites import Site, SiteCollection, intersection_over_union, prepare_geom
+from cssic.sites import Site, SiteCollection
 
 DAY = timedelta(days=1)
 

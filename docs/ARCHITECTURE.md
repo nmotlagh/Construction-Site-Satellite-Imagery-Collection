@@ -41,6 +41,10 @@ cssic/
   dates.py           sample_date_windows(), padding_scale()  (ported from
                      dates.py; `-n` now accepts 1 and 2, and a window reaches
                      day_padding days past its sampled date, both ends included)
+  geom.py            Geometry helpers that never raise (prepare_geom, safe_union,
+                     intersection_over_union, bounds_box): degenerate OSM
+                     footprints degrade to None/0.0/empty instead of aborting an
+                     extraction. shapely is a call-time import.
   sites.py           Site (the paper's construction chain: ids, start, end,
                      constr_tag, prev_tag, final_tag, geometry) and
                      SiteCollection (keyed by chain_id; to_gdf(); merge/link ops;

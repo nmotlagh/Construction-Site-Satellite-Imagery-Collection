@@ -20,8 +20,9 @@ from importlib import metadata as _metadata
 
 from cssic.config import Credentials, ExtractConfig, GatherConfig
 from cssic.dates import padding_scale, sample_date_windows
+from cssic.geom import intersection_over_union
 from cssic.poly import bbox_csv, load_poly, polygon_bounds
-from cssic.sites import Site, SiteCollection, intersection_over_union
+from cssic.sites import Site, SiteCollection
 from cssic.store import Workspace
 
 try:

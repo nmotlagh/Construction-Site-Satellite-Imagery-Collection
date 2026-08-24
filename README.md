@@ -523,7 +523,7 @@ The pieces are usable on their own:
 `cssic.imagery.get_image_source("stac").find_scenes(aoi, start, end)` and
 `.fetch(scene, aoi, "rgb")`, `cssic.dates.sample_date_windows`,
 `cssic.imagery.chips.padded_box` / `save_png`, and
-`cssic.sites.intersection_over_union`.
+`cssic.geom.intersection_over_union`.
 
 Nothing in the package mutates global state — chain serial numbers are handed
 out by the `SiteCollection` that owns them, not by a module- or class-level
