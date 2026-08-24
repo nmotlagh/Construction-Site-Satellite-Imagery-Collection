@@ -34,7 +34,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cssic.config import NO_TAG, ExtractConfig
-from cssic.geom import intersection_over_union, prepare_geom
+from cssic.geom import intersection_over_union, prepare_geom, safe_bounds
 from cssic.history.base import BBox, HistorySource, Interval, data_until
 from cssic.sites import Site, SiteCollection
 
@@ -223,12 +223,10 @@ def _candidates(frame: Any) -> list[_Candidate]:
 
 def padded_bbox(geometry: Any, padding: float = BOUNDARY_PADDING) -> BBox | None:
     """The geometry's bounding box grown by ``padding`` degrees, or None."""
-    prepared = prepare_geom(geometry)
-    if prepared is None:
+    bounds = safe_bounds(geometry)
+    if bounds is None:
         return None
-    minx, miny, maxx, maxy = prepared.bounds
-    if any(value != value for value in (minx, miny, maxx, maxy)):  # NaN
-        return None
+    minx, miny, maxx, maxy = bounds
     return (minx - padding, miny - padding, maxx + padding, maxy + padding)
 
 

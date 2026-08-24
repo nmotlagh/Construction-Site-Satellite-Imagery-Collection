@@ -3,14 +3,17 @@
 Wrappers around shapely that never raise: OSM footprints can be empty,
 self-intersecting, or otherwise degenerate, and one bad polygon must not
 abort an extraction that took hours. Unusable input degrades to ``None``
-(``0.0`` for :func:`intersection_over_union`, an empty polygon for
-:func:`bounds_box`) instead. shapely stays a call-time import so that
+(``0.0`` for :func:`intersection_over_union`) instead, and a footprint
+dropped from a union is logged. shapely stays a call-time import so that
 ``import cssic`` works without it.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _geom_errors() -> tuple[type[BaseException], ...]:
@@ -56,8 +59,12 @@ def safe_union(left: Any, right: Any) -> Any | None:
     try:
         merged = union_all([left, right])
         prepared = prepare_geom(merged)
-        return prepared if prepared is not None else left
+        if prepared is None:
+            logger.warning("geometry union produced nothing usable; dropping a footprint")
+            return left
+        return prepared
     except _geom_errors():
+        logger.warning("geometry union failed; dropping a footprint")
         return left
 
 
@@ -82,14 +89,20 @@ def intersection_over_union(left: Any, right: Any) -> float:
         return 0.0
 
 
-def bounds_box(geom: Any) -> Any:
-    """Return the geometry's bounding box as a polygon (empty polygon if unusable)."""
-    from shapely.geometry import Polygon, box
+def safe_union_all(geoms: Any) -> Any | None:
+    """Union an iterable of geometries, skipping unusable ones; None if none are."""
+    merged = None
+    for geom in geoms:
+        merged = safe_union(merged, geom)
+    return merged
 
+
+def safe_bounds(geom: Any) -> tuple[float, float, float, float] | None:
+    """The geometry's (minx, miny, maxx, maxy), or None if it cannot be used."""
     prepared = prepare_geom(geom)
     if prepared is None:
-        return Polygon()
+        return None
     minx, miny, maxx, maxy = prepared.bounds
     if any(v != v for v in (minx, miny, maxx, maxy)):  # NaN check
-        return Polygon()
-    return box(minx, miny, maxx, maxy)
+        return None
+    return (minx, miny, maxx, maxy)

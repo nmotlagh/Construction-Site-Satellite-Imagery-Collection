@@ -35,6 +35,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from cssic.geom import prepare_geom, safe_union_all
 from cssic.history.base import (
     DAY,
     BBox,
@@ -176,7 +177,8 @@ def _area_rows(path: Path) -> list[dict[str, Any]]:
                 geometry = wkblib.loads(self.factory.create_multipolygon(a), hex=True)
             except (InvalidLocationError, RuntimeError):
                 return
-            if geometry is None or geometry.is_empty:
+            geometry = prepare_geom(geometry)
+            if geometry is None:
                 return
             from_way = a.from_way()
             tags = _tag_dict(a.tags)
@@ -396,7 +398,6 @@ class OsmiumHistory:
     def construction_intervals(self, bbox: BBox, window: DateWindow) -> list[Interval]:
         """Ways tagged construction inside ``bbox`` overlapping ``window``."""
         from shapely.geometry import box
-        from shapely.ops import unary_union
 
         self.prepare()
         window_start, window_end = window
@@ -442,8 +443,8 @@ class OsmiumHistory:
             if not rows:
                 continue
             versions = self._geometry_versions(rows, record["valid_from"], record["valid_to"])
-            geometry = unary_union([version.geometry for version in versions])
-            if geometry.is_empty or not geometry.intersects(clip):
+            geometry = safe_union_all(version.geometry for version in versions)
+            if geometry is None or not geometry.intersects(clip):
                 continue
             first_row = rows[min(rows)]
             intervals.append(

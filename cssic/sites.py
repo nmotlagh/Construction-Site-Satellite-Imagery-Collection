@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cssic.geom import bounds_box, prepare_geom, safe_union
+from cssic.geom import safe_bounds, safe_union
 
 #: Column order of the collection GeoDataFrame / ``collection.gpkg``.
 GDF_COLUMNS = ("chain_id", "start", "end", "constr_tag", "prev_tag", "final_tag")
@@ -69,8 +69,7 @@ class Site:
 
     @property
     def bounds(self) -> tuple[float, float, float, float] | None:
-        prepared = prepare_geom(self.geometry)
-        return None if prepared is None else tuple(prepared.bounds)  # type: ignore[return-value]
+        return safe_bounds(self.geometry)
 
 
 class SiteCollection:
@@ -227,6 +226,7 @@ class SiteCollection:
     def to_gdf(self):
         """Return a GeoDataFrame of chains (bounding boxes), or None if empty."""
         import geopandas as gpd
+        from shapely.geometry import Polygon, box
 
         rows = []
         geometries = []
@@ -241,7 +241,8 @@ class SiteCollection:
                     str(site.final_tag),
                 ]
             )
-            geometries.append(bounds_box(site.geometry))
+            bounds = site.bounds
+            geometries.append(box(*bounds) if bounds is not None else Polygon())
         gdf = gpd.GeoDataFrame(
             rows, columns=list(GDF_COLUMNS), geometry=geometries, crs="EPSG:4326"
         )

@@ -36,6 +36,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from cssic.geom import prepare_geom, safe_union_all
 from cssic.history.base import (
     DAY,
     BBox,
@@ -133,12 +134,6 @@ def bbox_csv(bbox: BBox) -> str:
     return f"{minx},{miny},{maxx},{maxy}"
 
 
-def geometry_bbox(geometry: Any) -> BBox:
-    """``(minx, miny, maxx, maxy)`` of a shapely geometry."""
-    minx, miny, maxx, maxy = geometry.bounds
-    return (float(minx), float(miny), float(maxx), float(maxy))
-
-
 def split_bbox(bbox: BBox) -> list[BBox]:
     """Split a bounding box into four quadrants (used when ohsome returns 413)."""
     minx, miny, maxx, maxy = bbox
@@ -217,11 +212,15 @@ def _feature_geometry(feature: dict[str, Any]) -> Any | None:
         return None
     try:
         geom = shape(geom_json)
+        if geom.is_empty:
+            return None
     except (ValueError, TypeError, AttributeError):
         return None
-    if geom.is_empty:
-        return None
-    return geom
+    # Repair when possible, but an irreparable footprint still carries its
+    # row: every geometry consumer guards itself, and dropping the row would
+    # lose the way's snapshot descriptor (its boundary tag).
+    prepared = prepare_geom(geom)
+    return prepared if prepared is not None else geom
 
 
 def _append_version(
@@ -261,8 +260,6 @@ def intervals_from_features(
     construction (the chain footprint), and ``versions`` keeps them apart so
     boundary tags can be ranked against the shape of the right day.
     """
-    from shapely.ops import unary_union
-
     by_id: dict[str, list[tuple[date, date, Any, str, bool]]] = {}
     for feature in features:
         props = feature.get("properties") or {}
@@ -296,17 +293,16 @@ def intervals_from_features(
             if merged and start <= merged[-1][1] + DAY:
                 current = merged[-1]
                 current[1] = max(current[1], end)
-                current[2] = unary_union([current[2], geom])
-                current[3] = constr_tag
-                current[4] += 1
-                current[5] = still_open
-                _append_version(current[6], start, end, geom)
+                current[2] = constr_tag
+                current[3] += 1
+                current[4] = still_open
+                _append_version(current[5], start, end, geom)
                 continue
             merged.append(
-                [start, end, geom, constr_tag, 1, still_open, [GeometryVersion(start, end, geom)]]
+                [start, end, constr_tag, 1, still_open, [GeometryVersion(start, end, geom)]]
             )
         for index, span in enumerate(merged):
-            start, end, geom, constr_tag, versions, still_open, footprints = span
+            start, end, constr_tag, versions, still_open, footprints = span
             metadata = {
                 "ohsome_id": raw_id,
                 "interval_index": index,
@@ -316,12 +312,15 @@ def intervals_from_features(
             footprints[-1] = GeometryVersion(
                 footprints[-1].valid_from, end, footprints[-1].geometry
             )
+            geometry = safe_union_all(footprint.geometry for footprint in footprints)
+            if geometry is None:
+                continue
             intervals.append(
                 Interval(
                     osm_id=normalise_osm_id(raw_id),
                     valid_from=start,
                     valid_to=end,
-                    geometry=geom,
+                    geometry=geometry,
                     constr_tag=constr_tag,
                     metadata=metadata,
                     versions=tuple(footprints),
