@@ -246,7 +246,10 @@ def _planet_client(credentials: Credentials | None) -> Any:
 # the backend
 # --------------------------------------------------------------------------
 class PlanetSource:
-    """An :class:`~cssic.imagery.base.ImageSource` over Planet PSScene imagery.
+    """Planet PSScene imagery collected through the Orders API.
+
+    :meth:`bulk_order` places orders; :meth:`download_orders` collects chips.
+    :meth:`fetch` is unsupported by this backend; chips come from completed orders.
 
     ``client`` (anything with ``.data.search`` / ``.orders.*``, normally a
     ``planet.Planet``) is injected so tests never place real orders.

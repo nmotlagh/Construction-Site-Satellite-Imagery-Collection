@@ -1,4 +1,8 @@
-"""The ``ImageSource`` protocol shared by the Sentinel-2 and Planet backends."""
+"""Scene metadata and the synchronous ``ImageSource`` search/fetch protocol.
+
+Planet uses ``Scene`` metadata, but collects chips through
+``PlanetSource.bulk_order()`` and ``PlanetSource.download_orders()``.
+"""
 
 from __future__ import annotations
 
