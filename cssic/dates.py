@@ -74,6 +74,6 @@ def padding_scale(padding: float) -> float:
     ``padding=1`` leaves the box unchanged. ``padding=2`` doubles the area
     (each side scaled by sqrt(2)) while staying center-invariant.
     """
-    if padding <= 0:
-        raise ValueError(f"padding must be > 0, got {padding}")
+    if not math.isfinite(padding) or padding <= 0:
+        raise ValueError(f"padding must be finite and > 0, got {padding}")
     return math.sqrt(padding)

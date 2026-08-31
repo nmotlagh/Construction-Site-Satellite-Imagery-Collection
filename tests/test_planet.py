@@ -90,6 +90,23 @@ def item(item_id: str, geom, acquired: str, cloud: float = 0.1) -> dict:
     }
 
 
+@pytest.fixture
+def planet_bundle_spec(monkeypatch):
+    """Keep SDK validation offline without replacing request construction."""
+    from planet import specs
+
+    names = ("visual", "analytic_udm2", "analytic_sr_udm2")
+    monkeypatch.setattr(
+        specs,
+        "PRODUCT_BUNDLES",
+        {
+            "item_types": {"PSScene"},
+            "bundle_names": names,
+            "bundles": {name: {"assets": {"PSScene": []}} for name in names},
+        },
+    )
+
+
 def make_source(client=None, **cfg_kwargs) -> PlanetSource:
     cfg = GatherConfig(source="planet", **{"rgb": True, "nir": True, **cfg_kwargs})
     return PlanetSource(credentials=None, cfg=cfg, client=client or FakeClient())
@@ -306,7 +323,9 @@ def test_create_order_skips_sites_that_start_before_planetscope_exists(tmp_path)
     assert client.orders.requests == []
 
 
-def test_create_order_builds_a_clipped_partial_order_with_both_bundles(tmp_path):
+def test_create_order_builds_a_clipped_partial_order_with_both_bundles(
+    tmp_path, planet_bundle_spec
+):
     ws = Workspace(tmp_path)
     covering = box(-1, -1, 1, 1)
     client = FakeClient(
@@ -380,7 +399,7 @@ def test_an_unentitled_account_is_told_why_every_search_is_empty(tmp_path, capsy
     )
 
 
-def test_email_notifications_only_when_requested(tmp_path):
+def test_email_notifications_only_when_requested(tmp_path, planet_bundle_spec):
     ws = Workspace(tmp_path)
     covering = box(-1, -1, 1, 1)
     items = [item("a", covering, "2019-01-01T10:00:00Z")]
@@ -394,7 +413,7 @@ def test_email_notifications_only_when_requested(tmp_path):
     assert loud.client.orders.requests[0]["notifications"] == {"email": True}
 
 
-def test_bulk_order_walks_every_chain_and_logs_each_order(tmp_path):
+def test_bulk_order_walks_every_chain_and_logs_each_order(tmp_path, planet_bundle_spec):
     gpd = pytest.importorskip("geopandas")
     ws = Workspace(tmp_path)
     covering = box(-1, -1, 1, 1)

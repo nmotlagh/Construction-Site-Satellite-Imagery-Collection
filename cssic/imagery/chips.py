@@ -204,6 +204,8 @@ def is_blank(array: Any, tolerance: int = BLANK_TOLERANCE) -> bool:
 
 def save_png(array: Any, path: str | Path) -> Path:
     """Write an HxWx3 (rgb), HxWx1 or HxW (nir) uint8 array to ``path``."""
+    from tempfile import TemporaryDirectory
+
     from PIL import Image
 
     dest = Path(path)
@@ -213,7 +215,12 @@ def save_png(array: Any, path: str | Path) -> Path:
         pixels = pixels[:, :, 0]
     if pixels.size == 0 or min(pixels.shape[:2]) == 0:
         raise ValueError(f"refusing to write an empty chip to {dest}")
-    Image.fromarray(pixels).save(dest)
+    with TemporaryDirectory(prefix=".png-", dir=dest.parent) as temp_dir:
+        temporary = Path(temp_dir) / dest.name
+        Image.fromarray(pixels).save(temporary, format="PNG")
+        if dest.exists():
+            temporary.chmod(dest.stat().st_mode)
+        temporary.replace(dest)
     return dest
 
 

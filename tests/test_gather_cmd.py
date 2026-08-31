@@ -352,3 +352,83 @@ def test_gather_reports_an_unreadable_collection(tmp_path, monkeypatch, capsys):
 
     assert main(["gather", "-s", "stac", "--rgb"]) == 2
     assert "ERROR:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("source_name", ["stac", "sentinel"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start", "not-a-date"),
+        ("start", None),
+        ("start", "2018-07-01"),
+        ("geometry", None),
+        ("geometry", "empty"),
+    ],
+)
+def test_gather_skips_invalid_saved_site_and_writes_the_next(
+    tmp_path, monkeypatch, capsys, no_backend_check, source_name, field, value
+):
+    from PIL import Image
+    from shapely.geometry import Polygon
+
+    import cssic.imagery as imagery
+
+    ws = collection(tmp_path)
+    gdf = ws.load_collection()
+    gdf.at[0, field] = Polygon() if value == "empty" else value
+    ws.save_collection(gdf)
+
+    class Source:
+        def find_scenes(self, aoi, start, end):
+            assert aoi.bounds[0] > 1  # only the second site's input is usable
+            return [FakeScene(acquired=start)]
+
+        def fetch(self, scene, aoi, band):
+            return chip_array()
+
+    monkeypatch.setattr(imagery, "get_image_source", lambda *args, **kwargs: Source())
+    cfg = gather_config(
+        build_parser().parse_args(["gather", "-s", source_name, "--rgb", "-n", "1"])
+    )
+    assert run_gather(cfg, Credentials(), ws) == 0
+    out = capsys.readouterr().out
+    assert "10-0: INVALID SITE:" in out
+    assert "20-1: wrote 1 of 1 requested samples" in out
+    assert list(ws.images_dir("10-0", "sentinel", "rgb").glob("*.png")) == []
+    paths = list(ws.images_dir("20-1", "sentinel", "rgb").glob("*.png"))
+    assert len(paths) == 1
+    with Image.open(paths[0]) as image:
+        assert image.size == (8, 8)
+
+
+def test_gather_reads_and_writes_only_the_selected_workspace(
+    tmp_path, monkeypatch, no_backend_check
+):
+    from pathlib import Path
+
+    from PIL import Image
+
+    import cssic.imagery as imagery
+
+    ws = collection(tmp_path / "selected")
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+
+    class Source:
+        def find_scenes(self, aoi, start, end):
+            return [FakeScene(acquired=start)]
+
+        def fetch(self, scene, aoi, band):
+            return chip_array()
+
+    monkeypatch.setattr(imagery, "get_image_source", lambda *args, **kwargs: Source())
+    assert main(["--workspace", "../selected", "gather", "-s", "stac", "--rgb", "-n", "1"]) == 0
+    for chain_id in ("10-0", "20-1"):
+        paths = list(ws.images_dir(chain_id, "sentinel", "rgb").glob("*.png"))
+        assert len(paths) == 1
+        with Image.open(paths[0]) as image:
+            assert image.size == (8, 8)
+            assert image.getpixel((0, 0)) == (0, 1, 2)
+    assert list(caller.iterdir()) == []
+    assert Path.cwd() == caller

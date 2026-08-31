@@ -226,3 +226,64 @@ def test_reset_extract_reports_how_many_files_it_removed(tmp_path, monkeypatch, 
     monkeypatch.chdir(tmp_path)
     assert main(["reset-extract"]) == 0
     assert "Removed 2 file(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("padding", ["nan", "inf", "1e309"])
+def test_nonfinite_padding_is_rejected_before_credentials_or_gather(monkeypatch, capsys, padding):
+    import cssic.cli as cli
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("invalid padding must be rejected before credentials or gather")
+
+    monkeypatch.setattr(cli.Credentials, "from_env", unexpected_call)
+    monkeypatch.setattr(cli, "run_gather", unexpected_call)
+    assert main(["gather", "-s", "stac", "--rgb", "--padding", padding]) == 2
+    out = capsys.readouterr().out
+    assert out.count("ERROR:") == 1
+    assert "padding must be finite and > 0" in out
+
+
+def test_setup_uses_selected_workspace_without_changing_directory(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+
+    assert main(["--workspace", "../selected", "setup"]) == 0
+    assert (tmp_path / "selected" / "temp" / "snapshots").is_dir()
+    assert (tmp_path / "selected" / "output" / "collection").is_dir()
+    assert list(caller.iterdir()) == []
+    assert Path.cwd() == caller
+
+
+@pytest.mark.parametrize("command", ["reset-extract", "reset-images"])
+def test_reset_only_changes_the_selected_workspace(tmp_path, monkeypatch, command):
+    from pathlib import Path
+
+    from cssic.store import Workspace
+
+    markers = {}
+    for name in ("selected", "caller", "other"):
+        ws = Workspace(tmp_path / name)
+        paths = [
+            ws.collection_dir / "collection.gpkg",
+            ws.snapshot_dir / "snapshot.geojson",
+            ws.chip_path("10-0", "sentinel", "rgb", "2018-01-01"),
+        ]
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+        markers[name] = paths
+    monkeypatch.chdir(tmp_path / "caller")
+
+    assert main(["--workspace", "../selected", command]) == 0
+    assert Path.cwd() == tmp_path / "caller"
+    for name in ("caller", "other"):
+        assert all(path.read_text() == name for path in markers[name])
+    assert not markers["selected"][2].exists()
+    for path in markers["selected"][:2]:
+        if command == "reset-images":
+            assert path.read_text() == "selected"
+        else:
+            assert not path.exists()

@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        metavar="DIR",
+        help="Directory containing temp/ and output/ (default: current directory)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("setup", help="Create temp/ and output/ directories")
@@ -180,7 +186,7 @@ def gather_config(args: argparse.Namespace) -> GatherConfig:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    ws = Workspace()
+    ws = Workspace(args.workspace)
 
     if args.command == "setup":
         ws.setup()

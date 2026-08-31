@@ -112,7 +112,7 @@ def test_gather_config_rejects_bad_n(n):
         GatherConfig(source="stac", rgb=True, num_images=n)
 
 
-@pytest.mark.parametrize("padding", [0, -1, "wide"])
+@pytest.mark.parametrize("padding", [0, -1, "wide", "nan", "inf", "-inf", "1e309"])
 def test_gather_config_rejects_bad_padding(padding):
     with pytest.raises(ValueError):
         GatherConfig(source="stac", rgb=True, padding=padding)

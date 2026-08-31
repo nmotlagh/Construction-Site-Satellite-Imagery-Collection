@@ -10,6 +10,7 @@ Ported from the v2 ``extract_sites.set_params``/``get_input`` and
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -168,8 +169,8 @@ class GatherConfig:
             padding = float(self.padding)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"padding must be a number, got {self.padding!r}") from exc
-        if padding <= 0:
-            raise ValueError(f"padding must be > 0, got {padding}")
+        if not math.isfinite(padding) or padding <= 0:
+            raise ValueError(f"padding must be finite and > 0, got {padding}")
         object.__setattr__(self, "padding", padding)
 
         try:

@@ -180,6 +180,8 @@ def run_gather(
     workspace: Workspace | None = None,
 ) -> int:
     """Download imagery chips for every extracted construction chain."""
+    from shapely import is_geometry
+    from shapely.errors import GEOSException
     from shapely.geometry import box
 
     from cssic.dates import sample_date_windows
@@ -212,11 +214,18 @@ def run_gather(
     written = 0
     for _, row in gdf.iterrows():
         chain_id = str(row["chain_id"])
-        aoi = box(*padded_bounds(row["geometry"], cfg.padding))
-        start = date.fromisoformat(str(row["start"]))
-        end = date.fromisoformat(str(row["end"]))
-        windows = sample_date_windows(start, end, cfg.num_images, cfg.day_padding)
         log = _chain_logger(chain_id)
+        try:
+            geometry = row["geometry"]
+            if not is_geometry(geometry) or geometry.is_empty:
+                raise ValueError("missing or empty geometry")
+            aoi = box(*padded_bounds(geometry, cfg.padding))
+            start = date.fromisoformat(str(row["start"]))
+            end = date.fromisoformat(str(row["end"]))
+            windows = sample_date_windows(start, end, cfg.num_images, cfg.day_padding)
+        except (ValueError, GEOSException) as exc:
+            log(f"INVALID SITE: {exc}")
+            continue
         # One site's search failing (a transient API error, a bad geometry) must
         # not lose the sites after it: a gather run can take hours.
         try:

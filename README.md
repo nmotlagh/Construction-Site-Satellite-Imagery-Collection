@@ -86,11 +86,20 @@ Third-party API notes (Planet, Sentinel Hub, pyosmium, GeoPandas):
 
 ## Install
 
+Get this version from the modernization branch of Nick's personal fork:
+
+```bash
+git clone --branch codex/modernize-collector-20260830 \
+  https://github.com/nmotlagh/Construction-Site-Satellite-Imagery-Collection.git
+cd Construction-Site-Satellite-Imagery-Collection
+```
+
 Python 3.10+. Install with [uv](https://docs.astral.sh/uv/); the checked-in
 `uv.lock` pins the whole tree.
 
 ```bash
 uv sync --extra dev            # add --extra notebook for demo.ipynb
+source .venv/bin/activate
 ```
 
 Or with plain pip, in a Python 3.10+ virtualenv:
@@ -146,6 +155,21 @@ cssic setup
 cssic extract -s 2019-01-01 -e 2020-01-01 --poly poly/campus.poly
 cssic gather -s stac --rgb --nir -n 3 --verbose
 ```
+
+By default, `temp/` and `output/` are rooted in the current directory. To keep
+a region or date-window run separate, pass the global `--workspace DIR` option
+**before the subcommand**:
+
+```bash
+cssic --workspace runs/campus setup
+cssic --workspace runs/campus extract -s 2019-01-01 -e 2020-01-01 --poly poly/campus.poly
+cssic --workspace runs/campus gather -s stac --rgb --nir -n 3
+```
+
+All commands use that workspace, including Planet order/download logs and the
+two reset commands. This does not change the working directory: relative
+`--poly` and `--region` paths, and `.env` lookup, still refer to the directory
+where you invoke `cssic`. Omitting `--workspace` preserves the default layout.
 
 Two demo regions ship in [Osmosis polygon
 format](https://wiki.openstreetmap.org/wiki/Osmosis/Polygon_Filter_File_Format)

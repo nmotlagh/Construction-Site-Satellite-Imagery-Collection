@@ -402,3 +402,28 @@ def test_a_near_flat_cloud_chip_is_blank():
     pixels = rng.integers(220, 228, size=(54, 44), dtype="uint8")
     assert chips.is_blank(pixels) is True
     assert chips.is_blank(pixels, tolerance=0) is False
+
+
+def test_save_png_preserves_existing_chip_when_encoding_fails(tmp_path, monkeypatch):
+    pixels = np.arange(60, dtype="uint8").reshape(4, 5, 3)
+    replacement = np.flip(pixels, axis=0).copy()
+    path = chips.save_png(pixels, tmp_path / "2020-01-01.png")
+    path.chmod(0o640)
+    previous = path.read_bytes()
+    previous_mode = path.stat().st_mode
+
+    def fail_encoder(image, stream, filename, **kwargs):
+        stream.write(b"partial PNG")
+        raise OSError("synthetic encoder write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(Image.SAVE, "PNG", fail_encoder)
+        with pytest.raises(OSError, match="synthetic encoder write failure"):
+            chips.save_png(replacement, path)
+
+    assert path.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [path]
+    chips.save_png(replacement, path)
+    with Image.open(path) as image:
+        np.testing.assert_array_equal(np.asarray(image), replacement)
+    assert path.stat().st_mode == previous_mode

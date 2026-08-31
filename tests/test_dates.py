@@ -87,6 +87,7 @@ def test_padding_scale_identity_and_double_area():
     assert padding_scale(2) == pytest.approx(2**0.5)
 
 
-def test_padding_scale_rejects_non_positive():
+@pytest.mark.parametrize("padding", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_padding_scale_rejects_invalid_factors(padding):
     with pytest.raises(ValueError):
-        padding_scale(0)
+        padding_scale(padding)
